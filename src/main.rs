@@ -286,6 +286,7 @@ async fn merge(
     })?;
 
     let mut quality: u8 = 80;
+    let mut linearize: bool = false;
     let mut layout_json: Option<String> = None;
     let tmp = TempDir::new().map_err(|e| AppError::Internal(e.to_string()))?;
     let mut input_paths_legacy: Vec<std::path::PathBuf> = Vec::new();
@@ -307,6 +308,14 @@ async fn merge(
                 .trim()
                 .parse::<u8>()
                 .map_err(|_| AppError::BadRequest("Invalid quality".to_string()))?;
+            continue;
+        }
+        if name == "linearize" {
+            let value = field
+                .text()
+                .await
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            linearize = parse_bool_loose(&value);
             continue;
         }
         if name == "layout" {
@@ -424,9 +433,19 @@ async fn merge(
         }
 
         let assembled = qpdf_assemble_pages(&tmp, &inputs_by_id, &layout).await?;
-        merge_with_ghostscript(&tmp, &[assembled], quality).await?
+        let bytes = merge_with_ghostscript(&tmp, &[assembled], quality).await?;
+        if linearize {
+            qpdf_linearize_bytes(&tmp, bytes).await?
+        } else {
+            bytes
+        }
     } else {
-        merge_with_ghostscript(&tmp, &input_paths_legacy, quality).await?
+        let bytes = merge_with_ghostscript(&tmp, &input_paths_legacy, quality).await?;
+        if linearize {
+            qpdf_linearize_bytes(&tmp, bytes).await?
+        } else {
+            bytes
+        }
     };
 
     let mut res = Response::new(Body::from(output_bytes));
@@ -470,6 +489,42 @@ async fn qpdf_assemble_pages(
     }
 
     Ok(output_path)
+}
+
+fn parse_bool_loose(s: &str) -> bool {
+    let v = s.trim().to_ascii_lowercase();
+    matches!(v.as_str(), "1" | "true" | "on" | "yes")
+}
+
+async fn qpdf_linearize_bytes(tmp: &TempDir, input: Bytes) -> Result<Bytes, AppError> {
+    let in_path = tmp
+        .path()
+        .join(format!("lin_in_{}.pdf", uuid::Uuid::new_v4()));
+    let out_path = tmp
+        .path()
+        .join(format!("lin_out_{}.pdf", uuid::Uuid::new_v4()));
+
+    tokio::fs::write(&in_path, &input)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let output = Command::new("qpdf")
+        .arg("--linearize")
+        .arg(&in_path)
+        .arg(&out_path)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
+    }
+
+    let bytes = tokio::fs::read(&out_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Bytes::from(bytes))
 }
 
 async fn write_multipart_field_to_file(
@@ -668,7 +723,7 @@ fn render_app_page() -> String {
 
       <section class="grid">
         <div class="card">
-          <div class="section-title">1) Upload PDFs</div>
+          <div class="section-title">Upload PDFs</div>
           <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload PDFs">
             <div class="dz-title">Drag & drop up to 10 PDF files</div>
             <div class="dz-sub">…or click to choose files</div>
@@ -684,7 +739,7 @@ fn render_app_page() -> String {
         </div>
 
         <div class="card">
-          <div class="section-title">2) Output settings</div>
+          <div class="section-title">Output settings</div>
           <div class="row">
             <div>
               <div class="label-row">
@@ -706,8 +761,16 @@ fn render_app_page() -> String {
             </div>
           </div>
 
+          <div class="row" style="margin-top:12px">
+            <label class="toggle">
+              <input id="linearize" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span class="toggle-text">Linearize (fast web view)</span>
+            </label>
+          </div>
+
           <div class="actions">
-            <button id="mergeBtn" class="btn primary" type="button" disabled>Merge</button>
+            <button id="mergeBtn" class="btn primary cta" type="button" disabled>Download</button>
             <button id="clearBtn" class="btn" type="button" disabled>Clear</button>
           </div>
           <div class="hint">Nothing is stored server-side; refresh clears the workspace.</div>

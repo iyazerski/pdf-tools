@@ -236,6 +236,46 @@ body{
 .label-row{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px}
 .range{width:100%}
 
+.toggle{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  user-select:none;
+  cursor:pointer;
+}
+.toggle input{position:absolute; opacity:0; pointer-events:none}
+.switch{
+  width:44px;
+  height:26px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.16);
+  background: rgba(0,0,0,.22);
+  position:relative;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+  transition: background .15s ease, border-color .15s ease;
+}
+.switch::after{
+  content:"";
+  width:20px;
+  height:20px;
+  border-radius:999px;
+  position:absolute;
+  top:2px;
+  left:2px;
+  background: rgba(255,255,255,.88);
+  box-shadow: 0 8px 20px rgba(0,0,0,.35);
+  transition: transform .15s ease, background .15s ease;
+}
+.toggle input:checked + .switch{
+  border-color: rgba(35,213,255,.55);
+  background: rgba(35,213,255,.18);
+}
+.toggle input:checked + .switch::after{
+  transform: translateX(18px);
+  background: rgba(255,255,255,.95);
+}
+.toggle-text{color: rgba(255,255,255,.86); font-weight:800; font-size: 13px}
+
 .stats{
   display:grid;
   grid-template-columns: 1fr 1fr;
@@ -252,9 +292,16 @@ body{
 .stat-v{font-size: 18px; font-weight:900; margin-top:6px}
 
 .actions{
-  display:flex;
+  display:grid;
+  grid-template-columns: 1fr auto;
   gap:10px;
   margin-top: 14px;
+}
+.btn.cta{
+  width: 100%;
+  padding: 14px 14px;
+  border-radius: 16px;
+  font-size: 15px;
 }
 .empty{
   border:1px dashed rgba(255,255,255,.14);

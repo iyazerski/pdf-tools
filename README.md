@@ -10,6 +10,7 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 - Page-level editing (expand document, reorder/remove pages, insert another document between pages)
 - Merge into a single PDF in the selected order
 - Quality slider controls Ghostscript downsampling/JPEG quality
+- Optional linearization for fast web view
 - No persistence: nothing stored beyond each request; refresh clears client-side list
 
 ## Local run (Docker)

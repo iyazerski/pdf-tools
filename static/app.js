@@ -11,6 +11,7 @@
   const count = document.getElementById("count");
   const quality = document.getElementById("quality");
   const qualityValue = document.getElementById("qualityValue");
+  const linearize = document.getElementById("linearize");
   const inputSize = document.getElementById("inputSize");
   const estimatedSize = document.getElementById("estimatedSize");
   const toast = document.getElementById("toast");
@@ -359,6 +360,10 @@
     setUiState();
   });
 
+  if (linearize) {
+    linearize.addEventListener("change", () => setUiState());
+  }
+
   clearBtn.addEventListener("click", () => {
     nodes = [];
     docs.clear();
@@ -443,11 +448,12 @@
     mergeBtn.disabled = true;
     clearBtn.disabled = true;
     const prev = mergeBtn.textContent;
-    mergeBtn.textContent = "Merging…";
+    mergeBtn.textContent = "Downloading…";
     try {
       const usedDocs = new Set(layout.map((x) => x.doc));
       const fd = new FormData();
       fd.append("quality", String(quality.value));
+      fd.append("linearize", linearize && linearize.checked ? "1" : "0");
       fd.append("layout", JSON.stringify(layout));
       for (const docId of usedDocs) {
         const d = docs.get(docId);
