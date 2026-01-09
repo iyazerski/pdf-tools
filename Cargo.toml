@@ -16,6 +16,7 @@ sha2 = "0.10"
 tempfile = "3"
 time = { version = "0.3", features = ["std"] }
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "signal"] }
+tower_governor = "0.5"
 tower-cookies = "0.10"
 tower-http = { version = "0.5", features = ["limit", "trace"] }
 tracing = "0.1"

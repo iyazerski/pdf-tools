@@ -1,11 +1,14 @@
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::multipart::Field;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Form, Multipart, State};
 use axum::http::{header, HeaderValue, StatusCode};
+use axum::Json;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -23,13 +26,16 @@ use tower_cookies::cookie::SameSite;
 use tower_cookies::{Cookie, Cookies};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 use tracing::Level;
 use tracing::{error, info};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const MAX_PDFS: usize = 10;
-const MAX_BODY_BYTES: usize = 250 * 1024 * 1024;
+const MAX_FILE_BYTES: usize = 100 * 1024 * 1024;
+const MAX_BODY_BYTES: usize = (MAX_PDFS * MAX_FILE_BYTES) + (5 * 1024 * 1024);
 const SESSION_COOKIE_NAME: &str = "pdf_tools_session";
 
 #[derive(Clone)]
@@ -80,6 +86,17 @@ struct LoginForm {
 struct SessionPayload {
     u: String,
     exp_unix: i64,
+}
+
+#[derive(Serialize)]
+struct NPagesResponse {
+    pages: usize,
+}
+
+#[derive(Deserialize)]
+struct MergePageRef {
+    doc: String,
+    page: usize,
 }
 
 impl SessionSigner {
@@ -186,6 +203,76 @@ async fn logout(State(state): State<AppState>, cookies: Cookies) -> Result<Respo
     Ok(Redirect::to("/").into_response())
 }
 
+async fn npages(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    multipart: Result<Multipart, MultipartRejection>,
+) -> Result<Response, AppError> {
+    let _username = require_auth(&state, &cookies)?;
+
+    let mut multipart = multipart.map_err(|e| {
+        error!(error = %e, "multipart parse failed");
+        AppError::BadRequest("Error parsing multipart/form-data request".to_string())
+    })?;
+
+    let tmp = TempDir::new().map_err(|e| AppError::Internal(e.to_string()))?;
+    let mut pdf_path: Option<std::path::PathBuf> = None;
+    let mut file_name: Option<String> = None;
+
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name != "file" {
+            continue;
+        }
+
+        let content_type = field
+            .content_type()
+            .map(|m| m.split(';').next().unwrap_or("").trim().to_string())
+            .unwrap_or_default();
+        let f_name = field.file_name().unwrap_or("file.pdf").to_string();
+
+        if !content_type.is_empty() && content_type != mime::APPLICATION_PDF.essence_str() {
+            return Err(AppError::BadRequest(format!(
+                "Only PDF files are allowed (got {content_type} for {f_name})"
+            )));
+        }
+
+        let path = tmp.path().join("in.pdf");
+        let written = write_multipart_field_to_file(&mut field, &path).await?;
+        if written > MAX_FILE_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{f_name} is too large (max {} MB)",
+                MAX_FILE_BYTES / 1024 / 1024
+            )));
+        }
+        if !looks_like_pdf(&path).await? {
+            return Err(AppError::BadRequest(format!(
+                "{f_name} does not look like a PDF"
+            )));
+        }
+
+        pdf_path = Some(path);
+        file_name = Some(f_name);
+        break;
+    }
+
+    let Some(path) = pdf_path else {
+        return Err(AppError::BadRequest("Missing file".to_string()));
+    };
+
+    let pages = qpdf_show_npages(&path).await?;
+    info!(
+        pages,
+        file = %file_name.unwrap_or_else(|| "file.pdf".to_string()),
+        "computed page count"
+    );
+    Ok(Json(NPagesResponse { pages }).into_response())
+}
+
 async fn merge(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -199,8 +286,11 @@ async fn merge(
     })?;
 
     let mut quality: u8 = 80;
+    let mut layout_json: Option<String> = None;
     let tmp = TempDir::new().map_err(|e| AppError::Internal(e.to_string()))?;
-    let mut input_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut input_paths_legacy: Vec<std::path::PathBuf> = Vec::new();
+    let mut inputs_by_id: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
 
     while let Some(mut field) = multipart
         .next_field()
@@ -219,11 +309,14 @@ async fn merge(
                 .map_err(|_| AppError::BadRequest("Invalid quality".to_string()))?;
             continue;
         }
-
-        if input_paths.len() >= MAX_PDFS {
-            return Err(AppError::BadRequest(format!(
-                "Too many PDFs (max {MAX_PDFS})"
-            )));
+        if name == "layout" {
+            layout_json = Some(
+                field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?,
+            );
+            continue;
         }
 
         let content_type = field
@@ -239,23 +332,35 @@ async fn merge(
             )));
         }
 
-        let path = tmp.path().join(format!("in_{}.pdf", input_paths.len()));
-        let mut out = tokio::fs::File::create(&path)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let (doc_id, legacy_idx) = if let Some(rest) = name.strip_prefix("file_") {
+            (rest.to_string(), None)
+        } else if name == "files" {
+            (format!("legacy_{}", input_paths_legacy.len()), Some(input_paths_legacy.len()))
+        } else {
+            return Err(AppError::BadRequest(format!(
+                "Unexpected form field: {name}"
+            )));
+        };
 
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|e| AppError::BadRequest(e.to_string()))?
-        {
-            out.write_all(&chunk)
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+        if legacy_idx.is_some() && input_paths_legacy.len() >= MAX_PDFS {
+            return Err(AppError::BadRequest(format!(
+                "Too many PDFs (max {MAX_PDFS})"
+            )));
         }
-        out.flush()
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if inputs_by_id.len() >= MAX_PDFS && legacy_idx.is_none() {
+            return Err(AppError::BadRequest(format!(
+                "Too many PDFs (max {MAX_PDFS})"
+            )));
+        }
+
+        let path = tmp.path().join(format!("in_{}.pdf", uuid::Uuid::new_v4()));
+        let written = write_multipart_field_to_file(&mut field, &path).await?;
+        if written > MAX_FILE_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{file_name} is too large (max {} MB)",
+                MAX_FILE_BYTES / 1024 / 1024
+            )));
+        }
 
         if !looks_like_pdf(&path).await? {
             return Err(AppError::BadRequest(format!(
@@ -263,10 +368,18 @@ async fn merge(
             )));
         }
 
-        input_paths.push(path);
+        if legacy_idx.is_some() {
+            input_paths_legacy.push(path);
+        } else {
+            if inputs_by_id.insert(doc_id.clone(), path).is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "Duplicate document id: {doc_id}"
+                )));
+            }
+        }
     }
 
-    if input_paths.is_empty() {
+    if input_paths_legacy.is_empty() && inputs_by_id.is_empty() {
         return Err(AppError::BadRequest("No PDF files uploaded".to_string()));
     }
 
@@ -276,7 +389,45 @@ async fn merge(
         ));
     }
 
-    let output_bytes = merge_with_ghostscript(&tmp, &input_paths, quality).await?;
+    let output_bytes = if let Some(layout_json) = layout_json {
+        let layout: Vec<MergePageRef> = serde_json::from_str(&layout_json)
+            .map_err(|_| AppError::BadRequest("Invalid layout".to_string()))?;
+        if layout.is_empty() {
+            return Err(AppError::BadRequest("Layout is empty".to_string()));
+        }
+        if inputs_by_id.is_empty() {
+            return Err(AppError::BadRequest(
+                "Layout provided but no file_* parts found".to_string(),
+            ));
+        }
+
+        let mut pages_by_doc: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (doc, path) in &inputs_by_id {
+            let pages = qpdf_show_npages(path).await?;
+            pages_by_doc.insert(doc.clone(), pages);
+        }
+
+        for r in &layout {
+            let Some(max_pages) = pages_by_doc.get(&r.doc) else {
+                return Err(AppError::BadRequest(format!(
+                    "Layout references unknown doc id: {}",
+                    r.doc
+                )));
+            };
+            if r.page == 0 || r.page > *max_pages {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid page {} for doc {} (max {})",
+                    r.page, r.doc, max_pages
+                )));
+            }
+        }
+
+        let assembled = qpdf_assemble_pages(&tmp, &inputs_by_id, &layout).await?;
+        merge_with_ghostscript(&tmp, &[assembled], quality).await?
+    } else {
+        merge_with_ghostscript(&tmp, &input_paths_legacy, quality).await?
+    };
 
     let mut res = Response::new(Body::from(output_bytes));
     res.headers_mut().insert(
@@ -288,6 +439,65 @@ async fn merge(
         HeaderValue::from_static("attachment; filename=\"merged.pdf\""),
     );
     Ok(res)
+}
+
+async fn qpdf_assemble_pages(
+    tmp: &TempDir,
+    inputs_by_id: &std::collections::HashMap<String, std::path::PathBuf>,
+    layout: &[MergePageRef],
+) -> Result<std::path::PathBuf, AppError> {
+    let output_path = tmp
+        .path()
+        .join(format!("assembled_{}.pdf", uuid::Uuid::new_v4()));
+
+    let mut cmd = Command::new("qpdf");
+    cmd.arg("--empty").arg("--pages");
+    for r in layout {
+        let path = inputs_by_id
+            .get(&r.doc)
+            .ok_or_else(|| AppError::BadRequest(format!("Unknown doc id: {}", r.doc)))?;
+        cmd.arg(path).arg(r.page.to_string());
+    }
+    cmd.arg("--").arg(&output_path);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
+    }
+
+    Ok(output_path)
+}
+
+async fn write_multipart_field_to_file(
+    field: &mut Field<'_>,
+    path: &std::path::Path,
+) -> Result<usize, AppError> {
+    let mut out = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let mut written: usize = 0;
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        written = written.saturating_add(chunk.len());
+        if written > MAX_FILE_BYTES {
+            return Ok(written);
+        }
+        out.write_all(&chunk)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    out.flush()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(written)
 }
 
 async fn looks_like_pdf(path: &std::path::Path) -> Result<bool, AppError> {
@@ -348,6 +558,27 @@ async fn merge_with_ghostscript(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Bytes::from(bytes))
+}
+
+async fn qpdf_show_npages(path: &std::path::Path) -> Result<usize, AppError> {
+    let output = Command::new("qpdf")
+        .arg("--show-npages")
+        .arg(path)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pages = stdout
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| AppError::Internal("Failed to parse qpdf output".to_string()))?;
+    Ok(pages)
 }
 
 fn quality_to_gs_params(quality: u8) -> (i32, i32) {
@@ -530,15 +761,53 @@ async fn main() {
         )),
     };
 
-    let app = Router::new()
-        .route("/", get(index))
+    let global_governor = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(10)
+                .burst_size(30)
+                .finish()
+                .expect("governor config must build"),
+        ),
+    };
+    let auth_governor = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(1)
+                .burst_size(5)
+                .finish()
+                .expect("governor config must build"),
+        ),
+    };
+    let api_governor = GovernorLayer {
+        config: Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(2)
+                .burst_size(10)
+                .finish()
+                .expect("governor config must build"),
+        ),
+    };
+
+    let auth_routes = Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
-        .route("/api/merge", post(merge))
+        .route_layer(auth_governor);
+
+    let api_routes = Router::new()
+        .route("/merge", post(merge))
+        .route("/npages", post(npages))
+        .route_layer(api_governor);
+
+    let app = Router::new()
+        .route("/", get(index))
+        .merge(auth_routes)
+        .nest("/api", api_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .with_state(state)
         .layer(tower_cookies::CookieManagerLayer::new())
+        .layer(global_governor)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
@@ -550,7 +819,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .expect("bind must succeed");
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server must start");

@@ -7,6 +7,7 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 - Authenticated web UI (username/password from env, no DB)
 - Upload up to 10 PDFs via drag&drop
 - Reorder PDFs (drag or Up/Down)
+- Page-level editing (expand document, reorder/remove pages, insert another document between pages)
 - Merge into a single PDF in the selected order
 - Quality slider controls Ghostscript downsampling/JPEG quality
 - No persistence: nothing stored beyond each request; refresh clears client-side list
@@ -28,15 +29,21 @@ Open `http://localhost:8080`.
 
 Create a `.env` file (the app automatically reads it on startup) and run:
 
+Prereqs:
+
+- Rust
+- Ghostscript (`gs`)
+- qpdf (`qpdf`)
+
 ```bash
 cargo run
 ```
 
 ## Development
 
-### pre-commit (Rust)
+### pre-commit
 
-Install `pre-commit` (e.g. `brew install pre-commit` or `pipx install pre-commit`) and enable hooks:
+Install `pre-commit` (e.g. `brew install pre-commit` or `pip install pre-commit`) and enable hooks:
 
 ```bash
 pre-commit install
@@ -57,19 +64,3 @@ Manifests are in `k8s/`. The GitHub Actions workflow `.github/workflows/deploy.y
 - builds & pushes an image to GHCR
 - creates/updates `pdf-tools-secrets` in the target namespace
 - applies the manifests and waits for rollout
-
-### Hetzner (single IP, port 8091)
-
-Current manifests expose the app via `hostPort: 8091` on the node, so you can open:
-
-`http://<SERVER_IP>:8091`
-
-Required GitHub Actions secrets:
-
-- `KUBE_CONFIG_B64` — base64-encoded kubeconfig (or `KUBE_CONFIG` as plain kubeconfig text)
-- `KUBE_NAMESPACE` — optional; defaults to `default`
-- `APP_USERNAME`, `APP_PASSWORD`, `SESSION_SECRET`
-- `PACKAGES_PAT` — GitHub PAT with `read:packages` to create `ghcr-pull-secret` for pulling images from GHCR
-- `GHCR_USERNAME` — optional; defaults to repo owner
-
-Note: if your GHCR image is private, your cluster also needs an `imagePullSecret` configured.

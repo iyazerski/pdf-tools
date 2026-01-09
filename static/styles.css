@@ -181,6 +181,18 @@ body{
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.04);
 }
+.file.header{
+  border-style: dashed;
+  background: rgba(124,92,255,.08);
+}
+.file.page{
+  padding-left: 18px;
+  background: rgba(0,0,0,.18);
+  border-color: rgba(255,255,255,.08);
+}
+.file.page .name{
+  font-weight: 900;
+}
 .file[draggable="true"]{cursor:grab}
 .file:active{cursor:grabbing}
 .file.dragging{opacity:.55}
@@ -251,4 +263,3 @@ body{
   pointer-events:none;
 }
 .toast.show{opacity: 1; transform: translateY(0)}
-
