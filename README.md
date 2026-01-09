@@ -17,14 +17,14 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 
 ```bash
 docker build -t pdf-tools:local .
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8091:8091 \
   -e APP_USERNAME=admin \
   -e APP_PASSWORD=admin \
   -e SESSION_SECRET="change-me-please" \
   pdf-tools:local
 ```
 
-Open `http://localhost:8080`.
+Open `http://localhost:8091`.
 
 ## Local run (Cargo)
 
@@ -56,7 +56,7 @@ Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
 
 - `APP_USERNAME` / `APP_PASSWORD` (required)
 - `SESSION_SECRET` (required; random long string)
-- `BIND_ADDR` (default `0.0.0.0:8080`)
+- `BIND_ADDR` (default `0.0.0.0:8091`)
 
 ## Kubernetes + GitHub Actions
 

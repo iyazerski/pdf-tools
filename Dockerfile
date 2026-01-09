@@ -13,5 +13,5 @@ RUN apt-get update \
 COPY --from=build /app/target/release/pdf-tools /usr/local/bin/pdf-tools
 
 ENV RUST_LOG=info
-EXPOSE 8080
+EXPOSE 8091
 CMD ["pdf-tools"]

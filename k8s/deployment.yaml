@@ -21,8 +21,8 @@ spec:
           image: ghcr.io/OWNER/REPO:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8091
-              hostPort: 8091
+            - name: http
+              containerPort: 8091
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:8091
@@ -41,16 +41,20 @@ spec:
                 secretKeyRef:
                   name: pdf-tools-secrets
                   key: SESSION_SECRET
+            - name: COOKIE_SECURE
+              value: auto
+            - name: TRUST_PROXY_HEADERS
+              value: "1"
           readinessProbe:
             httpGet:
-              path: /
-              port: 8091
+              path: /healthz
+              port: http
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
-              port: 8091
+              path: /healthz
+              port: http
             initialDelaySeconds: 10
             periodSeconds: 20
           resources:
