@@ -6,7 +6,7 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 
 - Authenticated web UI (username/password from env, no DB)
 - Upload up to 10 PDFs via drag&drop
-- Reorder PDFs (drag or Up/Down)
+- Reorder PDFs (drag to reorder)
 - Page-level editing (expand document, reorder/remove pages, insert another document between pages)
 - Merge into a single PDF in the selected order
 - Quality slider controls Ghostscript downsampling/JPEG quality

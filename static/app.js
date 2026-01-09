@@ -98,18 +98,6 @@
     if (!stillUsed) docs.delete(docId);
   }
 
-  function moveNode(nodeId, delta) {
-    const idx = nodes.findIndex((n) => n.id === nodeId);
-    if (idx < 0) return;
-    const next = idx + delta;
-    if (next < 0 || next >= nodes.length) return;
-    const copy = nodes.slice();
-    const [spliced] = copy.splice(idx, 1);
-    copy.splice(next, 0, spliced);
-    nodes = copy;
-    renderList();
-  }
-
   function canCollapse(docId) {
     const d = docs.get(docId);
     if (!d || d.pages == null) return false;
@@ -160,6 +148,34 @@
 
   function renderList() {
     fileList.innerHTML = "";
+
+    const icons = {
+      trash:
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h5v2H3V5h5l1-2Zm1 7h2v9h-2v-9Zm4 0h2v9h-2v-9ZM6 8h12l-1 14H7L6 8Z"/></svg>',
+      chevronDown:
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6.7 8.7a1 1 0 0 1 1.4 0L12 12.6l3.9-3.9a1 1 0 1 1 1.4 1.4l-4.6 4.6a1 1 0 0 1-1.4 0L6.7 10.1a1 1 0 0 1 0-1.4Z"/></svg>',
+      chevronUp:
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6.7 15.3a1 1 0 0 0 1.4 0l3.9-3.9 3.9 3.9a1 1 0 1 0 1.4-1.4l-4.6-4.6a1 1 0 0 0-1.4 0l-4.6 4.6a1 1 0 0 0 0 1.4Z"/></svg>',
+    };
+
+    function iconBtn({ kind, label, onClick, disabled = false }) {
+      const b = document.createElement("button");
+      b.className = `btn icon-btn${kind === "danger" ? " danger" : ""}`;
+      b.type = "button";
+      b.innerHTML = kind === "chevronDown" ? icons.chevronDown
+        : kind === "chevronUp" ? icons.chevronUp
+          : icons.trash;
+      b.setAttribute("aria-label", label);
+      b.title = label;
+      b.disabled = disabled;
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick();
+      });
+      return b;
+    }
+
     for (const n of nodes) {
       const d = docs.get(n.docId);
       if (!d) continue;
@@ -194,64 +210,51 @@
       const tools = document.createElement("div");
       tools.className = "tools";
 
-      if (n.type !== "header") {
-        const up = document.createElement("button");
-        up.className = "btn";
-        up.type = "button";
-        up.textContent = "Up";
-        up.addEventListener("click", () => moveNode(n.id, -1));
-
-        const down = document.createElement("button");
-        down.className = "btn";
-        down.type = "button";
-        down.textContent = "Down";
-        down.addEventListener("click", () => moveNode(n.id, 1));
-
-        tools.appendChild(up);
-        tools.appendChild(down);
-      }
-
       if (n.type === "doc") {
-        const expand = document.createElement("button");
-        expand.className = "btn";
-        expand.type = "button";
-        expand.textContent = "Expand";
-        expand.disabled = d.pages == null || d.pages <= 1;
-        expand.addEventListener("click", () => expandDoc(n.docId));
-        tools.appendChild(expand);
-
-        const rm = document.createElement("button");
-        rm.className = "btn";
-        rm.type = "button";
-        rm.textContent = "Remove";
-        rm.addEventListener("click", () => removeDocEverywhere(n.docId));
-        tools.appendChild(rm);
+        const canExpand = d.pages != null && d.pages > 1;
+        tools.appendChild(
+          iconBtn({
+            kind: "chevronDown",
+            label: "Show pages",
+            onClick: () => expandDoc(n.docId),
+            disabled: !canExpand,
+          }),
+        );
+        tools.appendChild(
+          iconBtn({
+            kind: "danger",
+            label: "Remove document",
+            onClick: () => removeDocEverywhere(n.docId),
+          }),
+        );
       } else if (n.type === "header") {
-        const collapse = document.createElement("button");
-        collapse.className = "btn";
-        collapse.type = "button";
-        collapse.textContent = "Collapse";
-        collapse.disabled = !canCollapse(n.docId);
-        collapse.addEventListener("click", () => collapseDoc(n.docId));
-        tools.appendChild(collapse);
-
-        const rm = document.createElement("button");
-        rm.className = "btn";
-        rm.type = "button";
-        rm.textContent = "Remove doc";
-        rm.addEventListener("click", () => removeDocEverywhere(n.docId));
-        tools.appendChild(rm);
+        tools.appendChild(
+          iconBtn({
+            kind: "chevronUp",
+            label: "Hide pages",
+            onClick: () => collapseDoc(n.docId),
+            disabled: !canCollapse(n.docId),
+          }),
+        );
+        tools.appendChild(
+          iconBtn({
+            kind: "danger",
+            label: "Remove document",
+            onClick: () => removeDocEverywhere(n.docId),
+          }),
+        );
       } else {
-        const rm = document.createElement("button");
-        rm.className = "btn";
-        rm.type = "button";
-        rm.textContent = "Remove";
-        rm.addEventListener("click", () => {
-          nodes = nodes.filter((x) => x.id !== n.id);
-          maybeCleanupDoc(n.docId);
-          renderList();
-        });
-        tools.appendChild(rm);
+        tools.appendChild(
+          iconBtn({
+            kind: "danger",
+            label: "Remove page",
+            onClick: () => {
+              nodes = nodes.filter((x) => x.id !== n.id);
+              maybeCleanupDoc(n.docId);
+              renderList();
+            },
+          }),
+        );
       }
 
       li.appendChild(meta);
@@ -482,4 +485,3 @@
   mergeBtn.addEventListener("click", doMerge);
   renderList();
 })();
-
