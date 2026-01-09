@@ -32,6 +32,18 @@ Create a `.env` file (the app automatically reads it on startup) and run:
 cargo run
 ```
 
+## Development
+
+### pre-commit (Rust)
+
+Install `pre-commit` (e.g. `brew install pre-commit` or `pipx install pre-commit`) and enable hooks:
+
+```bash
+pre-commit install
+```
+
+Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
+
 ## Configuration
 
 - `APP_USERNAME` / `APP_PASSWORD` (required)

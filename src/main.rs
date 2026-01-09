@@ -2,9 +2,9 @@ use std::env;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Form, Multipart, State};
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::DefaultBodyLimit;
+use axum::extract::{Form, Multipart, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -23,8 +23,8 @@ use tower_cookies::cookie::SameSite;
 use tower_cookies::{Cookie, Cookies};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::{error, info};
 use tracing::Level;
+use tracing::{error, info};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -97,8 +97,7 @@ impl SessionSigner {
             serde_json::to_vec(&payload).expect("session payload must serialize to JSON");
         let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json);
 
-        let mut mac =
-            HmacSha256::new_from_slice(&self.key).expect("HMAC key must be non-empty");
+        let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC key must be non-empty");
         mac.update(payload_b64.as_bytes());
         let sig = mac.finalize().into_bytes();
         let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig);
@@ -137,10 +136,7 @@ impl SessionSigner {
 fn authed_username(state: &AppState, cookies: &Cookies) -> Option<String> {
     let token = cookies.get(SESSION_COOKIE_NAME)?;
     let now = OffsetDateTime::now_utc();
-    state
-        .signer
-        .verify(token.value(), now)
-        .map(|p| p.u)
+    state.signer.verify(token.value(), now).map(|p| p.u)
 }
 
 fn require_auth(state: &AppState, cookies: &Cookies) -> Result<String, AppError> {
@@ -169,7 +165,9 @@ async fn login(
             .into_response());
     }
 
-    let token = state.signer.issue(&form.username, OffsetDateTime::now_utc());
+    let token = state
+        .signer
+        .issue(&form.username, OffsetDateTime::now_utc());
     let mut cookie = Cookie::new(SESSION_COOKIE_NAME, token);
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
@@ -330,10 +328,7 @@ async fn merge_with_ghostscript(
         .arg(format!("-dGrayImageResolution={dpi}"))
         .arg("-dMonoImageResolution=600")
         .arg(format!("-dJPEGQ={jpegq}"))
-        .arg(format!(
-            "-sOutputFile={}",
-            output_path.to_string_lossy()
-        ));
+        .arg(format!("-sOutputFile={}", output_path.to_string_lossy()));
 
     for p in input_paths {
         cmd.arg(p);
@@ -346,9 +341,7 @@ async fn merge_with_ghostscript(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(AppError::Internal(format!(
-            "ghostscript failed: {stderr}"
-        )));
+        return Err(AppError::Internal(format!("ghostscript failed: {stderr}")));
     }
 
     let bytes = tokio::fs::read(&output_path)
@@ -369,7 +362,12 @@ fn quality_to_gs_params(quality: u8) -> (i32, i32) {
 fn render_login_page(error: Option<&str>) -> String {
     let css = include_str!("../static/styles.css");
     let err_html = error
-        .map(|m| format!(r#"<div class="alert" role="alert">{}</div>"#, html_escape(m)))
+        .map(|m| {
+            format!(
+                r#"<div class="alert" role="alert">{}</div>"#,
+                html_escape(m)
+            )
+        })
         .unwrap_or_default();
 
     format!(
@@ -526,7 +524,10 @@ async fn main() {
 
     let state = AppState {
         auth: Arc::new(AuthConfig { username, password }),
-        signer: Arc::new(SessionSigner::new(session_secret.into_bytes(), Duration::hours(24))),
+        signer: Arc::new(SessionSigner::new(
+            session_secret.into_bytes(),
+            Duration::hours(24),
+        )),
     };
 
     let app = Router::new()
