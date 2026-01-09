@@ -1,0 +1,148 @@
+pub(crate) fn render_login_page(error: Option<&str>) -> String {
+    let css = include_str!("../static/styles.css");
+    let err_html = error
+        .map(|m| {
+            format!(
+                r#"<div class="alert" role="alert">{}</div>"#,
+                html_escape(m)
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Tools — Sign in</title>
+    <style>{css}</style>
+  </head>
+  <body>
+    <div class="bg"></div>
+    <main class="shell">
+      <section class="card">
+        <div class="brand">
+          <div class="logo" aria-hidden="true">PDF</div>
+          <div>
+            <div class="title">PDF Tools</div>
+            <div class="subtitle">Merge PDFs and optimize size</div>
+          </div>
+        </div>
+        {err_html}
+        <form class="form" method="post" action="/login" autocomplete="off">
+          <label class="label">Username</label>
+          <input class="input" name="username" required />
+          <label class="label">Password</label>
+          <input class="input" type="password" name="password" required />
+          <button class="btn primary" type="submit">Sign in</button>
+        </form>
+        <div class="hint">Credentials are configured via environment variables.</div>
+      </section>
+    </main>
+  </body>
+</html>"#
+    )
+}
+
+pub(crate) fn render_app_page() -> String {
+    let css = include_str!("../static/styles.css");
+    let js = include_str!("../static/app.js");
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Tools</title>
+    <style>{css}</style>
+  </head>
+  <body>
+    <div class="bg"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo" aria-hidden="true">PDF</div>
+          <div>
+            <div class="title">PDF Tools</div>
+            <div class="subtitle">Merge PDFs in order, pick output quality</div>
+          </div>
+        </div>
+        <form method="post" action="/logout">
+          <button class="btn ghost" type="submit">Log out</button>
+        </form>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <div class="section-title">Upload PDFs</div>
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload PDFs">
+            <div class="dz-title">Drag & drop up to 10 PDF files</div>
+            <div class="dz-sub">…or click to choose files</div>
+          </div>
+          <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden />
+
+          <div class="list-head">
+            <div class="muted">Order matters (drag to reorder)</div>
+            <div class="muted"><span id="count">0</span>/10</div>
+          </div>
+          <ul id="fileList" class="file-list" aria-label="Uploaded PDFs"></ul>
+          <div id="empty" class="empty">No files yet.</div>
+        </div>
+
+        <div class="card">
+          <div class="section-title">Output settings</div>
+          <div class="row">
+            <div>
+              <div class="label-row">
+                <div class="label">Quality</div>
+                <div class="pill"><span id="qualityValue">80</span>%</div>
+              </div>
+              <input id="quality" class="range" type="range" min="10" max="100" value="80" />
+            </div>
+          </div>
+
+          <div class="stats">
+            <div class="stat">
+              <div class="stat-k">Input size</div>
+              <div class="stat-v" id="inputSize">0 B</div>
+            </div>
+            <div class="stat">
+              <div class="stat-k">Estimated output</div>
+              <div class="stat-v" id="estimatedSize">0 B</div>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:12px">
+            <label class="toggle">
+              <input id="linearize" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span class="toggle-text">Linearize (fast web view)</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="mergeBtn" class="btn primary cta" type="button" disabled>Download</button>
+            <button id="clearBtn" class="btn" type="button" disabled>Clear</button>
+          </div>
+          <div class="hint">Nothing is stored server-side; refresh clears the workspace.</div>
+
+          <div id="toast" class="toast" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>{js}</script>
+  </body>
+</html>"#
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
