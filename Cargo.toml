@@ -1,0 +1,23 @@
+[package]
+name = "pdf-tools"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart", "macros"] }
+base64 = "0.22"
+bytes = "1"
+dotenvy = "0.15"
+hmac = "0.12"
+mime = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+time = { version = "0.3", features = ["std"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "signal"] }
+tower-cookies = "0.10"
+tower-http = { version = "0.5", features = ["limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }

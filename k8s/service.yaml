@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pdf-tools
+  labels:
+    app: pdf-tools
+spec:
+  type: ClusterIP
+  selector:
+    app: pdf-tools
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+

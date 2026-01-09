@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pdf-tools
+  labels:
+    app: pdf-tools
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pdf-tools
+  template:
+    metadata:
+      labels:
+        app: pdf-tools
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: pdf-tools
+          image: ghcr.io/OWNER/REPO:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:8080
+            - name: COOKIE_SECURE
+              value: "true"
+            - name: APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: pdf-tools-secrets
+                  key: APP_USERNAME
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pdf-tools-secrets
+                  key: APP_PASSWORD
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pdf-tools-secrets
+                  key: SESSION_SECRET
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
