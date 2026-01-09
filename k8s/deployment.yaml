@@ -21,12 +21,11 @@ spec:
           image: ghcr.io/OWNER/REPO:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
+            - containerPort: 8091
+              hostPort: 8091
           env:
             - name: BIND_ADDR
-              value: 0.0.0.0:8080
-            - name: COOKIE_SECURE
-              value: "true"
+              value: 0.0.0.0:8091
             - name: APP_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -45,13 +44,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /
-              port: 8080
+              port: 8091
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /
-              port: 8080
+              port: 8091
             initialDelaySeconds: 10
             periodSeconds: 20
           resources:

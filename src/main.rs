@@ -36,7 +36,6 @@ const SESSION_COOKIE_NAME: &str = "pdf_tools_session";
 struct AppState {
     auth: Arc<AuthConfig>,
     signer: Arc<SessionSigner>,
-    cookie_secure: bool,
 }
 
 #[derive(Clone)]
@@ -175,7 +174,6 @@ async fn login(
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
     cookie.set_path("/");
-    cookie.set_secure(state.cookie_secure);
     cookies.add(cookie);
 
     Ok(Redirect::to("/").into_response())
@@ -524,16 +522,11 @@ async fn main() {
         panic!("SESSION_SECRET must be set");
     }
 
-    let cookie_secure = env::var("COOKIE_SECURE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
     let bind = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
 
     let state = AppState {
         auth: Arc::new(AuthConfig { username, password }),
         signer: Arc::new(SessionSigner::new(session_secret.into_bytes(), Duration::hours(24))),
-        cookie_secure,
     };
 
     let app = Router::new()

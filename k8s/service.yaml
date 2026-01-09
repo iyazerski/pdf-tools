@@ -10,6 +10,5 @@ spec:
     app: pdf-tools
   ports:
     - name: http
-      port: 80
-      targetPort: 8080
-
+      port: 8091
+      targetPort: 8091

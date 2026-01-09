@@ -71,14 +71,14 @@ jobs:
         run: |
           kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
 
-      - name: Create GHCR image pull secret (optional)
+      - name: Create GHCR image pull secret
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           PACKAGES_PAT: ${{ secrets.PACKAGES_PAT }}
         run: |
           if [ -z "${PACKAGES_PAT}" ]; then
-            echo "PACKAGES_PAT is not set; skipping ghcr-pull-secret creation."
-            exit 0
+            echo "PACKAGES_PAT is required to create ghcr-pull-secret for pulling images from GHCR." >&2
+            exit 1
           fi
           if [ -z "${GHCR_USERNAME}" ]; then
             GHCR_USERNAME="${{ github.repository_owner }}"
@@ -101,7 +101,6 @@ jobs:
         run: |
           sed -e "s|ghcr.io/OWNER/REPO:latest|${IMAGE}|g" k8s/deployment.yaml | kubectl -n "${NAMESPACE}" apply -f -
           kubectl -n "${NAMESPACE}" apply -f k8s/service.yaml
-          kubectl -n "${NAMESPACE}" apply -f k8s/ingress.yaml
 
       - name: Wait rollout
         run: |

@@ -19,7 +19,6 @@ docker run --rm -p 8080:8080 \
   -e APP_USERNAME=admin \
   -e APP_PASSWORD=admin \
   -e SESSION_SECRET="change-me-please" \
-  -e COOKIE_SECURE=false \
   pdf-tools:local
 ```
 
@@ -37,7 +36,6 @@ cargo run
 
 - `APP_USERNAME` / `APP_PASSWORD` (required)
 - `SESSION_SECRET` (required; random long string)
-- `COOKIE_SECURE` (default `false`; set to `true` behind HTTPS ingress)
 - `BIND_ADDR` (default `0.0.0.0:8080`)
 
 ## Kubernetes + GitHub Actions
@@ -48,12 +46,18 @@ Manifests are in `k8s/`. The GitHub Actions workflow `.github/workflows/deploy.y
 - creates/updates `pdf-tools-secrets` in the target namespace
 - applies the manifests and waits for rollout
 
+### Hetzner (single IP, port 8091)
+
+Current manifests expose the app via `hostPort: 8091` on the node, so you can open:
+
+`http://<SERVER_IP>:8091`
+
 Required GitHub Actions secrets:
 
 - `KUBE_CONFIG_B64` — base64-encoded kubeconfig (or `KUBE_CONFIG` as plain kubeconfig text)
 - `KUBE_NAMESPACE` — optional; defaults to `default`
 - `APP_USERNAME`, `APP_PASSWORD`, `SESSION_SECRET`
-- `PACKAGES_PAT` — optional; GitHub PAT with `read:packages` to create `ghcr-pull-secret` for private images
+- `PACKAGES_PAT` — GitHub PAT with `read:packages` to create `ghcr-pull-secret` for pulling images from GHCR
 - `GHCR_USERNAME` — optional; defaults to repo owner
 
 Note: if your GHCR image is private, your cluster also needs an `imagePullSecret` configured.
