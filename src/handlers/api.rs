@@ -15,10 +15,7 @@ use tracing::{error, info};
 
 use crate::constants::{MAX_FILE_BYTES, MAX_PDFS};
 use crate::error::AppError;
-use crate::pdf::{
-    looks_like_pdf, merge_with_ghostscript, qpdf_assemble_pages, qpdf_linearize_bytes,
-    qpdf_show_npages, write_multipart_field_to_file, MergePageRef,
-};
+use crate::pdf::{looks_like_pdf, write_multipart_field_to_file, MergePageRef};
 use crate::state::AppState;
 use crate::util::parse_bool_loose;
 
@@ -88,7 +85,7 @@ pub(crate) async fn npages(
         return Err(AppError::BadRequest("Missing file".to_string()));
     };
 
-    let pages = qpdf_show_npages(&path).await?;
+    let pages = crate::pdf::qpdf_show_npages_with_timeout(&path, state.process_timeout).await?;
     info!(
         pages,
         file = %file_name.unwrap_or_else(|| "file.pdf".to_string()),
@@ -235,7 +232,8 @@ pub(crate) async fn merge(
 
         let mut pages_by_doc: HashMap<String, usize> = HashMap::new();
         for (doc, path) in &inputs_by_id {
-            let pages = qpdf_show_npages(path).await?;
+            let pages =
+                crate::pdf::qpdf_show_npages_with_timeout(path, state.process_timeout).await?;
             pages_by_doc.insert(doc.clone(), pages);
         }
 
@@ -254,17 +252,37 @@ pub(crate) async fn merge(
             }
         }
 
-        let assembled = qpdf_assemble_pages(&tmp, &inputs_by_id, &layout).await?;
-        let bytes = merge_with_ghostscript(&tmp, &[assembled], quality).await?;
+        let assembled = crate::pdf::qpdf_assemble_pages_with_timeout(
+            &tmp,
+            &inputs_by_id,
+            &layout,
+            state.process_timeout,
+        )
+        .await?;
+        let bytes = crate::pdf::merge_with_ghostscript_with_timeout(
+            &tmp,
+            &[assembled],
+            quality,
+            state.process_timeout,
+        )
+        .await?;
         if linearize {
-            qpdf_linearize_bytes(&tmp, bytes).await?
+            crate::pdf::qpdf_linearize_bytes_with_timeout(&tmp, bytes, state.process_timeout)
+                .await?
         } else {
             bytes
         }
     } else {
-        let bytes = merge_with_ghostscript(&tmp, &input_paths_legacy, quality).await?;
+        let bytes = crate::pdf::merge_with_ghostscript_with_timeout(
+            &tmp,
+            &input_paths_legacy,
+            quality,
+            state.process_timeout,
+        )
+        .await?;
         if linearize {
-            qpdf_linearize_bytes(&tmp, bytes).await?
+            crate::pdf::qpdf_linearize_bytes_with_timeout(&tmp, bytes, state.process_timeout)
+                .await?
         } else {
             bytes
         }

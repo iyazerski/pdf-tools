@@ -54,6 +54,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/", get(handlers::root::index))
+        .route("/healthz", get(handlers::health::healthz))
         .merge(auth_routes)
         .nest("/api", api_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

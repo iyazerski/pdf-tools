@@ -31,6 +31,9 @@ async fn main() {
         config.password,
         config.session_secret.into_bytes(),
         Duration::hours(24),
+        config.process_timeout,
+        config.cookie_secure,
+        config.trust_proxy_headers,
     );
 
     let app = app::build_router(state);

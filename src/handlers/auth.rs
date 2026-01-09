@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
@@ -21,6 +22,7 @@ pub(crate) struct LoginForm {
 pub(crate) async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Result<Response, AppError> {
     let expected_username = state.auth.username.as_str();
@@ -40,6 +42,7 @@ pub(crate) async fn login(
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
     cookie.set_path("/");
+    cookie.set_secure(cookie_should_be_secure(&state, &headers));
     cookies.add(cookie);
 
     Ok(Redirect::to("/").into_response())
@@ -48,11 +51,44 @@ pub(crate) async fn login(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let _ = state.authed_username(&cookies);
     let mut cookie = Cookie::new(SESSION_COOKIE_NAME, "");
     cookie.set_path("/");
+    cookie.set_secure(cookie_should_be_secure(&state, &headers));
     cookie.make_removal();
     cookies.add(cookie);
     Ok(Redirect::to("/").into_response())
+}
+
+fn cookie_should_be_secure(state: &AppState, headers: &HeaderMap) -> bool {
+    match state.cookie.secure {
+        crate::config::CookieSecureMode::Always => true,
+        crate::config::CookieSecureMode::Never => false,
+        crate::config::CookieSecureMode::Auto => {
+            state.cookie.trust_proxy_headers && forwarded_proto_is_https(headers)
+        }
+    }
+}
+
+fn forwarded_proto_is_https(headers: &HeaderMap) -> bool {
+    if let Some(v) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        let first = v.split(',').next().unwrap_or("").trim();
+        if first.eq_ignore_ascii_case("https") {
+            return true;
+        }
+    }
+
+    if let Some(v) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
+        let v = v.to_ascii_lowercase();
+        if v.contains("proto=https") {
+            return true;
+        }
+    }
+
+    false
 }

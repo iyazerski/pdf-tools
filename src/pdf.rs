@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::process::Output;
+use std::time::Duration;
 
 use axum::extract::multipart::Field;
 use bytes::Bytes;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::constants::MAX_FILE_BYTES;
 use crate::error::AppError;
@@ -55,13 +58,14 @@ pub(crate) async fn looks_like_pdf(path: &Path) -> Result<bool, AppError> {
     Ok(n == 5 && &buf == b"%PDF-")
 }
 
-pub(crate) async fn qpdf_show_npages(path: &Path) -> Result<usize, AppError> {
-    let output = Command::new("qpdf")
-        .arg("--show-npages")
-        .arg(path)
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+pub(crate) async fn qpdf_show_npages_with_timeout(
+    path: &Path,
+    process_timeout: Duration,
+) -> Result<usize, AppError> {
+    let mut cmd = Command::new("qpdf");
+    cmd.arg("--show-npages").arg(path);
+
+    let output = output_with_timeout(cmd, process_timeout, "qpdf").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -76,10 +80,11 @@ pub(crate) async fn qpdf_show_npages(path: &Path) -> Result<usize, AppError> {
     Ok(pages)
 }
 
-pub(crate) async fn qpdf_assemble_pages(
+pub(crate) async fn qpdf_assemble_pages_with_timeout(
     tmp: &TempDir,
     inputs_by_id: &std::collections::HashMap<String, PathBuf>,
     layout: &[MergePageRef],
+    process_timeout: Duration,
 ) -> Result<PathBuf, AppError> {
     let output_path = tmp
         .path()
@@ -95,10 +100,7 @@ pub(crate) async fn qpdf_assemble_pages(
     }
     cmd.arg("--").arg(&output_path);
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+    let output = output_with_timeout(cmd, process_timeout, "qpdf").await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
@@ -107,7 +109,11 @@ pub(crate) async fn qpdf_assemble_pages(
     Ok(output_path)
 }
 
-pub(crate) async fn qpdf_linearize_bytes(tmp: &TempDir, input: Bytes) -> Result<Bytes, AppError> {
+pub(crate) async fn qpdf_linearize_bytes_with_timeout(
+    tmp: &TempDir,
+    input: Bytes,
+    process_timeout: Duration,
+) -> Result<Bytes, AppError> {
     let in_path = tmp
         .path()
         .join(format!("lin_in_{}.pdf", uuid::Uuid::new_v4()));
@@ -119,13 +125,10 @@ pub(crate) async fn qpdf_linearize_bytes(tmp: &TempDir, input: Bytes) -> Result<
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let output = Command::new("qpdf")
-        .arg("--linearize")
-        .arg(&in_path)
-        .arg(&out_path)
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to start qpdf: {e}")))?;
+    let mut cmd = Command::new("qpdf");
+    cmd.arg("--linearize").arg(&in_path).arg(&out_path);
+
+    let output = output_with_timeout(cmd, process_timeout, "qpdf").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -138,10 +141,11 @@ pub(crate) async fn qpdf_linearize_bytes(tmp: &TempDir, input: Bytes) -> Result<
     Ok(Bytes::from(bytes))
 }
 
-pub(crate) async fn merge_with_ghostscript(
+pub(crate) async fn merge_with_ghostscript_with_timeout(
     tmp: &TempDir,
     input_paths: &[PathBuf],
     quality: u8,
+    process_timeout: Duration,
 ) -> Result<Bytes, AppError> {
     let output_path = tmp.path().join(format!("out_{}.pdf", uuid::Uuid::new_v4()));
     let (dpi, jpegq) = quality_to_gs_params(quality);
@@ -170,10 +174,7 @@ pub(crate) async fn merge_with_ghostscript(
         cmd.arg(p);
     }
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to start ghostscript: {e}")))?;
+    let output = output_with_timeout(cmd, process_timeout, "ghostscript").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -192,4 +193,23 @@ fn quality_to_gs_params(quality: u8) -> (i32, i32) {
     let dpi = (72.0 + t * (300.0 - 72.0)).round() as i32;
     let jpegq = (20.0 + t * (95.0 - 20.0)).round() as i32;
     (dpi, jpegq)
+}
+
+async fn output_with_timeout(
+    mut cmd: Command,
+    process_timeout: Duration,
+    what: &str,
+) -> Result<Output, AppError> {
+    cmd.kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| AppError::Internal(format!("Failed to start {what}: {e}")))?;
+
+    match timeout(process_timeout, child.wait_with_output()).await {
+        Ok(output) => output.map_err(|e| AppError::Internal(format!("{what} failed: {e}"))),
+        Err(_) => Err(AppError::Internal(format!(
+            "{what} timed out after {}s",
+            process_timeout.as_secs()
+        ))),
+    }
 }
