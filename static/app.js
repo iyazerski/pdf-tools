@@ -1,6 +1,6 @@
 (() => {
   const MAX_FILES = 10;
-  const MAX_FILE_BYTES = 100 * 1024 * 1024;
+  const MAX_FILE_BYTES = 30 * 1024 * 1024;
 
   const dropzone = document.getElementById("dropzone");
   const fileInput = document.getElementById("fileInput");
@@ -428,7 +428,7 @@
     const slice = accepted.slice(0, space);
     for (const f of slice) {
       if (f.size > MAX_FILE_BYTES) {
-        showToast(`Skipped ${f.name} (max 100 MB per file).`);
+        showToast(`Skipped ${f.name} (max 30 MB per file).`);
         continue;
       }
       const docId = uid();
