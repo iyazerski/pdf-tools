@@ -76,11 +76,6 @@ body[data-authed="0"] .auth-when-authed{display:none !important}
   text-decoration-thickness: 2px;
 }
 .subtitle a:hover{color: rgba(35,213,255,.92)}
-.mono{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-weight: 800;
-  color: rgba(255,255,255,.72);
-}
 
 .top-actions{
   display:flex;
@@ -394,12 +389,6 @@ body.modal-open main.shell{
   gap:12px;
 }
 .modal-title{font-weight:900}
-.modal-actions{
-  display:flex;
-  gap:10px;
-  margin-top: 12px;
-  flex-wrap: wrap;
-}
 
 .access-row{
   display:flex;
