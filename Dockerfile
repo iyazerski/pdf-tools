@@ -2,7 +2,7 @@ FROM rust:1.92-bookworm AS build
 
 WORKDIR /app
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 
