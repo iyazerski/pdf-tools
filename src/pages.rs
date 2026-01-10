@@ -114,9 +114,9 @@ pub(crate) fn render_app_page(is_authed: bool, show_login_error: bool) -> String
           </button>
         </div>
         <div id="authError" class="alert" role="alert" hidden></div>
-        <form id="authForm" class="form" method="post" action="/login" autocomplete="off">
+        <form id="authForm" class="form" method="post" action="/login" autocomplete="on">
           <label class="label" for="authUsername">Username</label>
-          <input id="authUsername" class="input" name="username" autocomplete="username" required />
+          <input id="authUsername" class="input" type="text" name="username" autocomplete="username" required />
           <label class="label" for="authPassword">Password</label>
           <input id="authPassword" class="input" type="password" name="password" autocomplete="current-password" required />
           <button class="btn primary" type="submit">Sign in</button>
