@@ -64,4 +64,14 @@ Manifests are in `k8s/`. The GitHub Actions workflow `.github/workflows/deploy.y
 
 - builds & pushes an image to GHCR
 - creates/updates `pdf-tools-secrets` in the target namespace
+- applies a cert-manager `ClusterIssuer` for Let's Encrypt (required secret: `LETSENCRYPT_EMAIL`)
 - applies the manifests and waits for rollout
+
+### HTTPS (Ingress + Let's Encrypt)
+
+This repo assumes the cluster already has:
+
+- an Ingress controller with class `nginx` (e.g. ingress-nginx) exposed on ports 80/443
+- cert-manager installed (to provision TLS certs via Let's Encrypt)
+
+The app is exposed via `k8s/ingress.yaml` on `pdftools.iyazerski.dev` with automatic TLS via cert-manager.

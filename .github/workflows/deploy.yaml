@@ -101,10 +101,21 @@ jobs:
             --from-literal=SESSION_SECRET="${{ secrets.SESSION_SECRET }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Apply cert-manager ClusterIssuer (Let's Encrypt)
+        env:
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+        run: |
+          if [ -z "${LETSENCRYPT_EMAIL}" ]; then
+            echo "LETSENCRYPT_EMAIL secret is required for Let's Encrypt." >&2
+            exit 1
+          fi
+          sed -e "s|__LETSENCRYPT_EMAIL__|${LETSENCRYPT_EMAIL}|g" k8s/clusterissuer-letsencrypt-prod.yaml | kubectl apply -f -
+
       - name: Deploy manifests
         run: |
           sed -e "s|ghcr.io/OWNER/REPO:latest|${IMAGE}|g" k8s/deployment.yaml | kubectl -n "${NAMESPACE}" apply -f -
           kubectl -n "${NAMESPACE}" apply -f k8s/service.yaml
+          kubectl -n "${NAMESPACE}" apply -f k8s/ingress.yaml
 
       - name: Wait rollout
         run: |
