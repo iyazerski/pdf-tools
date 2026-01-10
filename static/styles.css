@@ -28,6 +28,9 @@ body{
              linear-gradient(180deg, var(--bg0), var(--bg1));
 }
 
+body[data-authed="1"] .auth-when-unauthed{display:none !important}
+body[data-authed="0"] .auth-when-authed{display:none !important}
+
 .bg{
   position:fixed; inset:0;
   background-image:
@@ -66,6 +69,26 @@ body{
 }
 .title{font-weight:800; font-size: 16px}
 .subtitle{color:var(--muted); font-size: 13px; margin-top:2px}
+.subtitle a{
+  color: rgba(255,255,255,.78);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 2px;
+}
+.subtitle a:hover{color: rgba(35,213,255,.92)}
+.mono{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-weight: 800;
+  color: rgba(255,255,255,.72);
+}
+
+.top-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap: wrap;
+}
 
 .grid{
   display:grid;
@@ -75,6 +98,7 @@ body{
 @media (max-width: 880px){
   .grid{grid-template-columns: 1fr}
   .topbar{flex-direction:column; align-items:stretch}
+  .top-actions{justify-content:flex-end}
 }
 
 .card{
@@ -89,6 +113,8 @@ body{
 .section-title{font-weight:800; margin-bottom: 12px}
 .muted{color:var(--muted)}
 .hint{color:var(--muted); font-size: 12px; margin-top: 10px}
+.hint-block{display:flex; flex-direction:column; gap:6px}
+.hint-title{color: rgba(255,255,255,.78); font-weight:900; letter-spacing:.2px}
 
 .btn{
   appearance:none;
@@ -401,3 +427,25 @@ body.modal-open main.shell{
   color: rgba(255,255,255,.82);
   user-select: text;
 }
+
+.footer{
+  margin-top: 18px;
+  padding: 6px 2px 0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.footer-link{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  color: var(--muted);
+  text-decoration:none;
+  font-weight:800;
+}
+.footer-link:hover{color: rgba(35,213,255,.92)}
+.footer-link .gh{width:18px; height:18px; opacity:.9}

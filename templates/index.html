@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Tools — Merge &amp; optimize PDFs</title>
+    <meta name="description" content="PDF Tools is a fast, privacy-first PDF utility: merge multiple PDFs, reorder pages, choose output quality, and enable linearized (fast web view) output. Files are processed temporarily and deleted after processing; transport is HTTPS/TLS." />
+    <meta name="keywords" content="pdf, merge pdf, combine pdf, reorder pages, optimize pdf, compress pdf, linearize pdf, fast web view, qpdf, ghostscript" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <link rel="canonical" href="https://pdftools.iyazerski.dev/" />
+
+    <meta property="og:site_name" content="PDF Tools" />
+    <meta property="og:title" content="PDF Tools | Merge &amp; optimize PDFs" />
+    <meta property="og:description" content="PDF Tools is a fast, privacy-first PDF utility: merge multiple PDFs, reorder pages, choose output quality, and enable linearized (fast web view) output. Files are processed temporarily and deleted after processing; transport is HTTPS/TLS." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://pdftools.iyazerski.dev/" />
+    <meta property="og:image" content="https://pdftools.iyazerski.dev/og-image.svg" />
+    <meta property="og:image:type" content="image/svg+xml" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="PDF Tools | Merge &amp; optimize PDFs" />
+    <meta name="twitter:description" content="PDF Tools is a fast, privacy-first PDF utility: merge multiple PDFs, reorder pages, choose output quality, and enable linearized (fast web view) output. Files are processed temporarily and deleted after processing; transport is HTTPS/TLS." />
+    <meta name="twitter:image" content="https://pdftools.iyazerski.dev/og-image.svg" />
+
+    <meta name="theme-color" content="#0a0f1d" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "PDF Tools",
+        "url": "https://pdftools.iyazerski.dev/",
+        "applicationCategory": "UtilityApplication",
+        "operatingSystem": "Any",
+        "description": "PDF Tools is a fast, privacy-first PDF utility: merge multiple PDFs, reorder pages, choose output quality, and enable linearized (fast web view) output. Files are processed temporarily and deleted after processing; transport is HTTPS/TLS.",
+        "isPartOf": { "@type": "WebSite", "name": "iyazerski.dev", "url": "https://iyazerski.dev/" },
+        "publisher": { "@type": "Person", "name": "Ihar Yazerski", "url": "https://iyazerski.dev/" }
+      }
+    </script>
+
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body data-authed="{{AUTH_DATA}}" data-login-error="{{LOGIN_ERROR_DATA}}">
+    <div class="bg"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+	          <div class="logo" aria-hidden="true">PDF</div>
+	          <div>
+	            <div class="title">PDF Tools</div>
+	            <div class="subtitle">
+	              Merge, reorder pages, optimize &amp; linearize PDFs. Part of
+	              <a href="https://iyazerski.dev/" target="_blank" rel="noopener noreferrer">iyazerski.dev</a>
+	            </div>
+	          </div>
+	        </div>
+
+        <div class="top-actions">
+          <button id="openAuthBtn" class="btn primary auth-when-unauthed" type="button">Sign in</button>
+          <form class="auth-when-authed" method="post" action="/logout">
+            <button class="btn ghost" type="submit">Log out</button>
+          </form>
+        </div>
+      </header>
+
+      <section class="grid">
+        <div class="card">
+          <div class="section-title">Upload PDFs</div>
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload PDFs">
+            <div class="dz-title auth-when-authed">Drag &amp; drop up to 10 PDF files</div>
+            <div class="dz-sub auth-when-authed">…or click to choose files</div>
+
+            <div class="dz-title auth-when-unauthed">Sign in to upload PDFs</div>
+            <div class="dz-sub auth-when-unauthed">Click to sign in</div>
+          </div>
+          <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden />
+
+          <div class="list-head">
+            <div class="muted">Order matters (drag to reorder)</div>
+            <div class="muted"><span id="count">0</span>/10</div>
+          </div>
+          <ul id="fileList" class="file-list" aria-label="Uploaded PDFs"></ul>
+          <div id="empty" class="empty">No files yet.</div>
+        </div>
+
+        <div class="card">
+          <div class="section-title">Output settings</div>
+          <div class="row">
+            <div>
+              <div class="label-row">
+                <div class="label">Quality</div>
+                <div class="pill"><span id="qualityValue">80</span>%</div>
+              </div>
+              <input id="quality" class="range" type="range" min="10" max="100" value="80" />
+            </div>
+          </div>
+
+          <div class="stats">
+            <div class="stat">
+              <div class="stat-k">Input size</div>
+              <div class="stat-v" id="inputSize">0 B</div>
+            </div>
+            <div class="stat">
+              <div class="stat-k">Estimated output</div>
+              <div class="stat-v" id="estimatedSize">0 B</div>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top: 12px">
+            <label class="toggle">
+              <input id="linearize" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span class="toggle-text">Linearize (fast web view)</span>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="mergeBtn" class="btn primary cta" type="button" disabled>Download</button>
+            <button id="clearBtn" class="btn" type="button" disabled>Clear</button>
+          </div>
+
+          <div class="hint hint-block">
+            <div class="hint-title">Privacy &amp; security</div>
+            <div>Files are processed in a short-lived workspace and deleted after processing.</div>
+            <div>Transport is encrypted with HTTPS/TLS; we don’t persist or share your PDFs.</div>
+          </div>
+
+          <div id="toast" class="toast" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <div class="footer-left">© 2026 Ihar Yazerski</div>
+        <a class="footer-link" href="https://github.com/iyazerski/pdf-tools" target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository">
+          <svg class="gh" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M12 .5C5.7.5.6 5.6.6 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2.1c-3.2.7-3.9-1.4-3.9-1.4-.5-1.2-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.1 1.7 1.1 1 .1.6 1.8 2.9 2.2.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.4 1.2-3.3-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2 1-.3 2-.4 3.1-.4 1.1 0 2.1.1 3.1.4 2.3-1.6 3.3-1.2 3.3-1.2.6 1.6.2 2.8.1 3.1.8.9 1.2 2 1.2 3.3 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.4 5.6 18.3.5 12 .5z" />
+          </svg>
+          <span>GitHub</span>
+        </a>
+      </footer>
+    </main>
+
+    <div id="authModal" class="modal-backdrop" hidden>
+      <section class="modal card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <div class="modal-head">
+          <div class="modal-title" id="authTitle">Sign in to upload</div>
+          <button id="authCloseBtn" class="btn icon-btn" type="button" aria-label="Close">
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        <div id="authError" class="alert" role="alert" hidden></div>
+        <form id="authForm" class="form" method="post" action="/login" autocomplete="on">
+          <label class="label" for="authUsername">Username</label>
+          <input id="authUsername" class="input" type="text" name="username" autocomplete="username" required />
+          <label class="label" for="authPassword">Password</label>
+          <input id="authPassword" class="input" type="password" name="password" autocomplete="current-password" required />
+          <button class="btn primary" type="submit">Sign in</button>
+        </form>
+        <div class="hint access-row">
+          <span>No login details?</span>
+          <a id="requestAccessLink" class="access-link" href="mailto:ihar.yazerski@gmail.com">Request access</a>
+          <span class="access-sep">or email me at</span>
+          <span class="email-text">ihar.yazerski@gmail.com</span>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

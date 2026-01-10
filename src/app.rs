@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, Request};
+use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -98,6 +100,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/", get(handlers::root::index))
+        .route_service("/favicon.svg", ServeFile::new("static/favicon.svg"))
+        .route(
+            "/favicon.ico",
+            get(|| async { Redirect::permanent("/favicon.svg") }),
+        )
+        .route_service("/og-image.svg", ServeFile::new("static/og-image.svg"))
+        .route_service("/robots.txt", ServeFile::new("static/robots.txt"))
+        .route_service("/sitemap.xml", ServeFile::new("static/sitemap.xml"))
+        .nest_service("/static", ServeDir::new("static"))
         .route("/healthz", get(handlers::health::healthz))
         .merge(auth_routes)
         .nest("/api", api_routes)

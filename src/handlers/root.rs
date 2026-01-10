@@ -21,5 +21,5 @@ pub(crate) async fn index(
     Ok(Html(render_app_page(
         is_authed,
         !is_authed && query.login_error.is_some(),
-    )))
+    )?))
 }
