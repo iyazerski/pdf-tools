@@ -15,6 +15,107 @@
   const inputSize = document.getElementById("inputSize");
   const estimatedSize = document.getElementById("estimatedSize");
   const toast = document.getElementById("toast");
+  const openAuthBtn = document.getElementById("openAuthBtn");
+  const authModal = document.getElementById("authModal");
+  const authCloseBtn = document.getElementById("authCloseBtn");
+  const authError = document.getElementById("authError");
+  const authUsername = document.getElementById("authUsername");
+  const requestAccessLink = document.getElementById("requestAccessLink");
+
+  const ACCESS_EMAIL = "ihar.yazerski@gmail.com";
+  const LOGIN_ERROR_STORAGE_KEY = "pdf_tools_login_error";
+
+  const isAuthed = document.body && document.body.dataset
+    ? document.body.dataset.authed === "1"
+    : false;
+
+  function buildAccessRequestMailto() {
+    const origin = window.location && window.location.origin ? window.location.origin : "";
+    const subject = encodeURIComponent("Access request: PDF Tools");
+    const body = encodeURIComponent(
+      `Hi,\n\nPlease grant me access to PDF Tools (${origin}).\n\nThanks,\n`,
+    );
+    return `mailto:${encodeURIComponent(ACCESS_EMAIL)}?subject=${subject}&body=${body}`;
+  }
+
+  function setAuthError(message) {
+    if (!authError) return;
+    if (!message) {
+      authError.hidden = true;
+      authError.textContent = "";
+      return;
+    }
+    authError.textContent = message;
+    authError.hidden = false;
+  }
+
+  function takePendingLoginErrorFromUrl() {
+    const hasLoginError = document.body && document.body.dataset
+      ? document.body.dataset.loginError === "1"
+      : false;
+    if (!hasLoginError || isAuthed) return;
+
+    // Don't auto-open the modal on refresh; keep the error for the next auth attempt.
+    try {
+      window.sessionStorage.setItem(LOGIN_ERROR_STORAGE_KEY, "1");
+    } catch {
+      // Ignore storage failures.
+    }
+
+    showToast("Invalid username or password.");
+    if (window.history && window.history.replaceState) window.history.replaceState({}, "", "/");
+  }
+
+  function openAuthModal() {
+    if (!authModal) return;
+    document.body.classList.add("modal-open");
+    authModal.hidden = false;
+    if (requestAccessLink) requestAccessLink.href = buildAccessRequestMailto();
+
+    let hasStoredLoginError = false;
+    try {
+      hasStoredLoginError = window.sessionStorage.getItem(LOGIN_ERROR_STORAGE_KEY) === "1";
+    } catch {
+      hasStoredLoginError = false;
+    }
+    if (hasStoredLoginError) {
+      setAuthError("Invalid username or password.");
+    } else {
+      setAuthError("");
+    }
+    if (authUsername) authUsername.focus();
+  }
+
+  function closeAuthModal() {
+    if (!authModal) return;
+    authModal.hidden = true;
+    document.body.classList.remove("modal-open");
+    if (openAuthBtn) openAuthBtn.focus();
+  }
+
+  function requireAuthForUpload() {
+    if (isAuthed) return true;
+    openAuthModal();
+    return false;
+  }
+
+  if (openAuthBtn) openAuthBtn.addEventListener("click", openAuthModal);
+  if (authCloseBtn) authCloseBtn.addEventListener("click", closeAuthModal);
+  if (authModal) {
+    authModal.addEventListener("click", (e) => {
+      if (e.target === authModal) closeAuthModal();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && authModal && !authModal.hidden) closeAuthModal();
+  });
+
+  if (!isAuthed) {
+    // Prevent the native file picker from being reachable in any browser.
+    fileInput.disabled = true;
+  }
+
+  takePendingLoginErrorFromUrl();
 
   /**
    * @typedef {{ id: string, file: File, name: string, size: number, pages: number | null }} Doc
@@ -276,6 +377,10 @@
         body: fd,
         credentials: "same-origin",
       });
+      if (res.status === 401) {
+        openAuthModal();
+        throw new Error("Sign in to upload files.");
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(text || `Failed to read pages (${res.status})`);
@@ -335,10 +440,6 @@
     renderList();
   }
 
-  dropzone.addEventListener("click", () => fileInput.click());
-  dropzone.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") fileInput.click();
-  });
   fileInput.addEventListener("change", () => {
     if (fileInput.files) addFiles(fileInput.files);
     fileInput.value = "";
@@ -346,12 +447,16 @@
 
   dropzone.addEventListener("dragover", (e) => {
     e.preventDefault();
-    dropzone.classList.add("dragover");
+    if (isAuthed) dropzone.classList.add("dragover");
   });
   dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
   dropzone.addEventListener("drop", (e) => {
     e.preventDefault();
     dropzone.classList.remove("dragover");
+    if (!isAuthed) {
+      openAuthModal();
+      return;
+    }
     if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
   });
 
@@ -435,6 +540,10 @@
 
   async function doMerge() {
     if (docs.size === 0) return;
+    if (!isAuthed) {
+      openAuthModal();
+      return;
+    }
     if (!allPageCountsKnown()) {
       showToast("Pages are still being calculated…");
       return;
@@ -466,6 +575,10 @@
         body: fd,
         credentials: "same-origin",
       });
+      if (res.status === 401) {
+        openAuthModal();
+        throw new Error("Sign in to download.");
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(text || `Merge failed (${res.status})`);
@@ -490,4 +603,30 @@
 
   mergeBtn.addEventListener("click", doMerge);
   renderList();
+
+  // Gate upload interactions last so earlier listeners remain simple.
+  dropzone.addEventListener("click", (e) => {
+    if (!requireAuthForUpload()) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    fileInput.click();
+  });
+  dropzone.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (!requireAuthForUpload()) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    fileInput.click();
+  });
+  fileInput.addEventListener("click", (e) => {
+    if (!requireAuthForUpload()) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
+
 })();

@@ -1,7 +1,6 @@
 use axum::extract::State;
-use axum::http::HeaderMap;
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -10,7 +9,6 @@ use tower_cookies::{Cookie, Cookies};
 
 use crate::constants::SESSION_COOKIE_NAME;
 use crate::error::AppError;
-use crate::pages::render_login_page;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -29,8 +27,11 @@ pub(crate) async fn login(
     let expected_password = state.auth.password.as_str();
     if form.username != expected_username || form.password != expected_password {
         return Ok((
-            StatusCode::UNAUTHORIZED,
-            Html(render_login_page(Some("Invalid username or password."))),
+            StatusCode::SEE_OTHER,
+            [(
+                axum::http::header::LOCATION,
+                HeaderValue::from_static("/?login_error=1"),
+            )],
         )
             .into_response());
     }

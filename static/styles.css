@@ -328,3 +328,49 @@ body{
   pointer-events:none;
 }
 .toast.show{opacity: 1; transform: translateY(0)}
+
+a.btn{
+  text-decoration:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
+body.modal-open{overflow:hidden}
+body.modal-open main.shell{
+  filter: blur(10px);
+  transform: scale(.99);
+}
+
+.modal-backdrop{
+  position: fixed;
+  inset: 0;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 50;
+}
+.modal-backdrop[hidden]{display:none !important}
+
+.modal{
+  width: 100%;
+  max-width: 520px;
+}
+
+.modal-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.modal-title{font-weight:900}
+.modal-actions{
+  display:flex;
+  gap:10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
