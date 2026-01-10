@@ -13,7 +13,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
-use crate::constants::MAX_BODY_BYTES;
+use crate::constants::{GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -59,8 +59,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         config: Arc::new(
             GovernorConfigBuilder::default()
                 .key_extractor(key_extractor)
-                .per_second(5)
-                .burst_size(10)
+                .per_second(GLOBAL_RATE_LIMIT_RPS)
+                .burst_size(GLOBAL_RATE_LIMIT_BURST)
                 .finish()
                 .expect("governor config must build"),
         ),
