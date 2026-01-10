@@ -8,8 +8,12 @@ use axum::http::{header, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::Json;
+use bytes::Bytes;
 use serde::Serialize;
 use tempfile::TempDir;
+use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tower_cookies::Cookies;
 use tracing::{error, info};
 
@@ -218,7 +222,7 @@ pub(crate) async fn merge(
         ));
     }
 
-    let output_bytes = if let Some(layout_json) = layout_json {
+    let output_path = if let Some(layout_json) = layout_json {
         let layout: Vec<MergePageRef> = serde_json::from_str(&layout_json)
             .map_err(|_| AppError::BadRequest("Invalid layout".to_string()))?;
         if layout.is_empty() {
@@ -259,7 +263,7 @@ pub(crate) async fn merge(
             state.process_timeout,
         )
         .await?;
-        let bytes = crate::pdf::merge_with_ghostscript_with_timeout(
+        let merged_path = crate::pdf::merge_with_ghostscript_to_file_with_timeout(
             &tmp,
             &[assembled],
             quality,
@@ -267,13 +271,13 @@ pub(crate) async fn merge(
         )
         .await?;
         if linearize {
-            crate::pdf::qpdf_linearize_bytes_with_timeout(&tmp, bytes, state.process_timeout)
+            crate::pdf::qpdf_linearize_file_with_timeout(&tmp, &merged_path, state.process_timeout)
                 .await?
         } else {
-            bytes
+            merged_path
         }
     } else {
-        let bytes = crate::pdf::merge_with_ghostscript_with_timeout(
+        let merged_path = crate::pdf::merge_with_ghostscript_to_file_with_timeout(
             &tmp,
             &input_paths_legacy,
             quality,
@@ -281,14 +285,53 @@ pub(crate) async fn merge(
         )
         .await?;
         if linearize {
-            crate::pdf::qpdf_linearize_bytes_with_timeout(&tmp, bytes, state.process_timeout)
+            crate::pdf::qpdf_linearize_file_with_timeout(&tmp, &merged_path, state.process_timeout)
                 .await?
         } else {
-            bytes
+            merged_path
         }
     };
 
-    let mut res = Response::new(Body::from(output_bytes));
+    let meta = tokio::fs::metadata(&output_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let content_len = meta.len();
+
+    let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    tokio::spawn(async move {
+        let _tmp = tmp;
+        let mut file = match tokio::fs::File::open(&output_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = tx.send(Err(e)).await;
+                return;
+            }
+        };
+
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match file.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+            if n == 0 {
+                return;
+            }
+            if tx
+                .send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+
+    let body = Body::from_stream(ReceiverStream::new(rx));
+    let mut res = Response::new(body);
     res.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/pdf"),
@@ -296,6 +339,11 @@ pub(crate) async fn merge(
     res.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_static("attachment; filename=\"merged.pdf\""),
+    );
+    res.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&content_len.to_string())
+            .map_err(|e| AppError::Internal(e.to_string()))?,
     );
     Ok(res)
 }

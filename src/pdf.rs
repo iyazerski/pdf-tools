@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::process::Stdio;
 use std::time::Duration;
 
 use axum::extract::multipart::Field;
-use bytes::Bytes;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -72,11 +72,18 @@ pub(crate) async fn qpdf_show_npages_with_timeout(
         return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let pages = stdout
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| AppError::Internal("Failed to parse qpdf output".to_string()))?;
+        .split_whitespace()
+        .find_map(|t| t.parse::<usize>().ok())
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            AppError::Internal(format!(
+                "Failed to parse qpdf output (stdout={}, stderr={})",
+                truncate_for_log(&stdout),
+                truncate_for_log(&stderr)
+            ))
+        })?;
     Ok(pages)
 }
 
@@ -109,24 +116,25 @@ pub(crate) async fn qpdf_assemble_pages_with_timeout(
     Ok(output_path)
 }
 
-pub(crate) async fn qpdf_linearize_bytes_with_timeout(
+fn quality_to_gs_params(quality: u8) -> (i32, i32) {
+    let q = quality.clamp(10, 100) as f64;
+    let t = (q - 10.0) / 90.0;
+    let dpi = (72.0 + t * (300.0 - 72.0)).round() as i32;
+    let jpegq = (20.0 + t * (95.0 - 20.0)).round() as i32;
+    (dpi, jpegq)
+}
+
+pub(crate) async fn qpdf_linearize_file_with_timeout(
     tmp: &TempDir,
-    input: Bytes,
+    input_path: &Path,
     process_timeout: Duration,
-) -> Result<Bytes, AppError> {
-    let in_path = tmp
-        .path()
-        .join(format!("lin_in_{}.pdf", uuid::Uuid::new_v4()));
+) -> Result<PathBuf, AppError> {
     let out_path = tmp
         .path()
         .join(format!("lin_out_{}.pdf", uuid::Uuid::new_v4()));
 
-    tokio::fs::write(&in_path, &input)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
     let mut cmd = Command::new("qpdf");
-    cmd.arg("--linearize").arg(&in_path).arg(&out_path);
+    cmd.arg("--linearize").arg(input_path).arg(&out_path);
 
     let output = output_with_timeout(cmd, process_timeout, "qpdf").await?;
 
@@ -135,18 +143,15 @@ pub(crate) async fn qpdf_linearize_bytes_with_timeout(
         return Err(AppError::Internal(format!("qpdf failed: {stderr}")));
     }
 
-    let bytes = tokio::fs::read(&out_path)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Bytes::from(bytes))
+    Ok(out_path)
 }
 
-pub(crate) async fn merge_with_ghostscript_with_timeout(
+pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
     tmp: &TempDir,
     input_paths: &[PathBuf],
     quality: u8,
     process_timeout: Duration,
-) -> Result<Bytes, AppError> {
+) -> Result<PathBuf, AppError> {
     let output_path = tmp.path().join(format!("out_{}.pdf", uuid::Uuid::new_v4()));
     let (dpi, jpegq) = quality_to_gs_params(quality);
 
@@ -181,18 +186,7 @@ pub(crate) async fn merge_with_ghostscript_with_timeout(
         return Err(AppError::Internal(format!("ghostscript failed: {stderr}")));
     }
 
-    let bytes = tokio::fs::read(&output_path)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Bytes::from(bytes))
-}
-
-fn quality_to_gs_params(quality: u8) -> (i32, i32) {
-    let q = quality.clamp(10, 100) as f64;
-    let t = (q - 10.0) / 90.0;
-    let dpi = (72.0 + t * (300.0 - 72.0)).round() as i32;
-    let jpegq = (20.0 + t * (95.0 - 20.0)).round() as i32;
-    (dpi, jpegq)
+    Ok(output_path)
 }
 
 async fn output_with_timeout(
@@ -200,6 +194,9 @@ async fn output_with_timeout(
     process_timeout: Duration,
     what: &str,
 ) -> Result<Output, AppError> {
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
     let child = cmd
         .spawn()
@@ -212,4 +209,20 @@ async fn output_with_timeout(
             process_timeout.as_secs()
         ))),
     }
+}
+
+fn truncate_for_log(s: &str) -> String {
+    const MAX: usize = 512;
+    if s.len() <= MAX {
+        return s.to_string();
+    }
+
+    let mut end = 0usize;
+    for (idx, _) in s.char_indices() {
+        if idx > MAX {
+            break;
+        }
+        end = idx;
+    }
+    format!("{}…", &s[..end])
 }

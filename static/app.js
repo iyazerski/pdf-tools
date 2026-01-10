@@ -194,6 +194,7 @@
   function removeDocEverywhere(docId) {
     docs.delete(docId);
     nodes = nodes.filter((n) => n.docId !== docId);
+    renderList();
   }
 
   function maybeCleanupDoc(docId) {
