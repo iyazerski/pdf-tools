@@ -1,0 +1,40 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: pdf-tools-web
+  labels:
+    app: pdf-tools
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`pdftools.iyazerski.dev`)
+      kind: Rule
+      middlewares:
+        - name: https-redirect
+      services:
+        - name: pdf-tools
+          port: 8091
+          serversTransport: pdf-tools-transport
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: pdf-tools-websecure
+  labels:
+    app: pdf-tools
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`pdftools.iyazerski.dev`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+        - name: buffering
+      services:
+        - name: pdf-tools
+          port: 8091
+          serversTransport: pdf-tools-transport
+  tls:
+    secretName: pdftools-iyazerski-dev-tls

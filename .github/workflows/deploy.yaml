@@ -115,7 +115,9 @@ jobs:
         run: |
           sed -e "s|ghcr.io/OWNER/REPO:latest|${IMAGE}|g" k8s/deployment.yaml | kubectl -n "${NAMESPACE}" apply -f -
           kubectl -n "${NAMESPACE}" apply -f k8s/service.yaml
-          kubectl -n "${NAMESPACE}" apply -f k8s/ingress.yaml
+          kubectl -n "${NAMESPACE}" apply -f k8s/traefik.yaml
+          kubectl -n "${NAMESPACE}" apply -f k8s/certificate.yaml
+          kubectl -n "${NAMESPACE}" apply -f k8s/ingressroute.yaml
 
       - name: Wait rollout
         run: |

@@ -71,7 +71,11 @@ Manifests are in `k8s/`. The GitHub Actions workflow `.github/workflows/deploy.y
 
 This repo assumes the cluster already has:
 
-- an Ingress controller with class `nginx` (e.g. ingress-nginx) exposed on ports 80/443
+- Traefik installed (default for k3s) exposed on ports 80/443 with entryPoints `web` and `websecure`
 - cert-manager installed (to provision TLS certs via Let's Encrypt)
 
-The app is exposed via `k8s/ingress.yaml` on `pdftools.iyazerski.dev` with automatic TLS via cert-manager.
+The app is exposed on `pdftools.iyazerski.dev` via:
+
+- `k8s/traefik.yaml` (middlewares + ServersTransport)
+- `k8s/certificate.yaml` (cert-manager Certificate)
+- `k8s/ingressroute.yaml` (Traefik IngressRoute)
