@@ -374,3 +374,30 @@ body.modal-open main.shell{
   margin-top: 12px;
   flex-wrap: wrap;
 }
+
+.access-row{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap: wrap;
+}
+
+.access-link{
+  color: rgba(255,255,255,.92);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 2px;
+  cursor: pointer;
+}
+.access-link:hover{
+  color: rgba(35,213,255,.92);
+}
+
+.access-sep{
+  color: rgba(255,255,255,.72);
+}
+
+.email-text{
+  color: rgba(255,255,255,.82);
+  user-select: text;
+}

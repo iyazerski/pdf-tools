@@ -35,7 +35,7 @@
     const body = encodeURIComponent(
       `Hi,\n\nPlease grant me access to PDF Tools (${origin}).\n\nThanks,\n`,
     );
-    return `mailto:${encodeURIComponent(ACCESS_EMAIL)}?subject=${subject}&body=${body}`;
+    return `mailto:${ACCESS_EMAIL}?subject=${subject}&body=${body}`;
   }
 
   function setAuthError(message) {
@@ -101,6 +101,7 @@
 
   if (openAuthBtn) openAuthBtn.addEventListener("click", openAuthModal);
   if (authCloseBtn) authCloseBtn.addEventListener("click", closeAuthModal);
+  if (requestAccessLink) requestAccessLink.href = buildAccessRequestMailto();
   if (authModal) {
     authModal.addEventListener("click", (e) => {
       if (e.target === authModal) closeAuthModal();

@@ -121,8 +121,11 @@ pub(crate) fn render_app_page(is_authed: bool, show_login_error: bool) -> String
           <input id="authPassword" class="input" type="password" name="password" autocomplete="current-password" required />
           <button class="btn primary" type="submit">Sign in</button>
         </form>
-        <div class="modal-actions">
-          <a id="requestAccessLink" class="btn" href="mailto:">Request access</a>
+        <div class="hint access-row">
+          <span>No login details?</span>
+          <a id="requestAccessLink" class="access-link" href="mailto:ihar.yazerski@gmail.com">Request access</a>
+          <span class="access-sep">or email me at</span>
+          <span class="email-text">ihar.yazerski@gmail.com</span>
         </div>
       </section>
     </div>
