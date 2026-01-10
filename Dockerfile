@@ -12,6 +12,9 @@ RUN apt-get update \
 
 COPY --from=build /app/target/release/pdf-tools /usr/local/bin/pdf-tools
 
+RUN useradd -u 10001 -U -m -d /home/app -s /usr/sbin/nologin app
+
 ENV RUST_LOG=info
 EXPOSE 8091
+USER 10001:10001
 CMD ["pdf-tools"]
