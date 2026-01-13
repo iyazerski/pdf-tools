@@ -12,9 +12,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
-use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::io::ReaderStream;
 use tower_cookies::Cookies;
 use tracing::{error, info};
 
@@ -370,41 +368,15 @@ pub(crate) async fn merge(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let content_len = meta.len();
 
-    let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(8);
-    tokio::spawn(async move {
-        let _tmp = tmp;
-        let mut file = match tokio::fs::File::open(&output_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = tx.send(Err(e)).await;
-                return;
-            }
-        };
-
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = match file.read(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            if n == 0 {
-                return;
-            }
-            if tx
-                .send(Ok(Bytes::copy_from_slice(&buf[..n])))
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-
-    let body = Body::from_stream(ReceiverStream::new(rx));
+    let file = tokio::fs::File::open(&output_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let stream = ReaderStream::with_capacity(file, 64 * 1024);
+    let body = Body::from_stream(stream);
     let mut res = Response::new(body);
+    // Keep TempDir alive for the duration of the response body stream.
+    res.extensions_mut()
+        .insert(std::sync::Arc::new(std::sync::Mutex::new(tmp)));
     res.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/pdf"),
