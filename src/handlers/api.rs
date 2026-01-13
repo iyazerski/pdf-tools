@@ -8,10 +8,10 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::Json;
-use bytes::Bytes;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
+use tokio::fs;
 use tokio_util::io::ReaderStream;
 use tower_cookies::Cookies;
 use tracing::{error, info};
@@ -134,27 +134,67 @@ pub(crate) async fn page_png(
         None => 40,
     };
 
-    let tmp = TempDir::new().map_err(|e| AppError::Internal(e.to_string()))?;
-    let png_path = crate::pdf::ghostscript_render_page_png_with_timeout(
-        &tmp,
-        &upload.pdf_path,
-        page,
-        dpi,
-        state.process_timeout,
-    )
-    .await?;
-
-    let bytes = tokio::fs::read(png_path)
+    let cache_dir = upload._dir_guard.path().join("render_cache");
+    fs::create_dir_all(&cache_dir)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    let cache_path = cache_dir.join(format!("page_{page}_dpi_{dpi}.png"));
 
-    let mut res = Response::new(Body::from(Bytes::from(bytes)));
+    let png_path = match fs::metadata(&cache_path).await {
+        Ok(_) => cache_path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let tmp_path = cache_dir.join(format!(
+                "page_{page}_dpi_{dpi}.tmp_{}.png",
+                uuid::Uuid::new_v4()
+            ));
+            crate::pdf::ghostscript_render_page_png_to_path_with_timeout(
+                &upload.pdf_path,
+                page,
+                dpi,
+                &tmp_path,
+                state.process_timeout,
+            )
+            .await?;
+
+            // Best-effort atomic publish: if another request rendered concurrently, prefer the
+            // already-published cache file and clean up our temp file.
+            if let Err(e) = fs::rename(&tmp_path, &cache_path).await {
+                if fs::metadata(&cache_path).await.is_ok() {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    cache_path
+                } else {
+                    return Err(AppError::Internal(e.to_string()));
+                }
+            } else {
+                cache_path
+            }
+        }
+        Err(e) => return Err(AppError::Internal(e.to_string())),
+    };
+
+    let meta = fs::metadata(&png_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let content_len = meta.len();
+
+    let file = fs::File::open(&png_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let body = Body::from_stream(ReaderStream::with_capacity(file, 64 * 1024));
+    let mut res = Response::new(body);
+    // Keep the upload TempDir alive for the duration of the response body stream.
+    res.extensions_mut().insert(upload._dir_guard.clone());
     *res.status_mut() = StatusCode::OK;
     res.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
     res.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),
+    );
+    res.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&content_len.to_string())
+            .map_err(|e| AppError::Internal(e.to_string()))?,
     );
     Ok(res)
 }

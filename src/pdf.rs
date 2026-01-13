@@ -97,13 +97,15 @@ pub(crate) async fn qpdf_assemble_pages_with_timeout(
         .path()
         .join(format!("assembled_{}.pdf", uuid::Uuid::new_v4()));
 
+    let runs = compress_layout_runs(layout);
+
     let mut cmd = Command::new("qpdf");
     cmd.arg("--empty").arg("--pages");
-    for r in layout {
+    for run in runs {
         let path = inputs_by_id
-            .get(&r.doc)
-            .ok_or_else(|| AppError::BadRequest(format!("Unknown doc id: {}", r.doc)))?;
-        cmd.arg(path).arg(r.page.to_string());
+            .get(&run.doc)
+            .ok_or_else(|| AppError::BadRequest(format!("Unknown doc id: {}", run.doc)))?;
+        cmd.arg(path).arg(run.spec());
     }
     cmd.arg("--").arg(&output_path);
 
@@ -114,6 +116,42 @@ pub(crate) async fn qpdf_assemble_pages_with_timeout(
     }
 
     Ok(output_path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayoutRun {
+    doc: String,
+    start: usize,
+    end: usize,
+}
+
+impl LayoutRun {
+    fn spec(&self) -> String {
+        if self.start == self.end {
+            self.start.to_string()
+        } else {
+            format!("{}-{}", self.start, self.end)
+        }
+    }
+}
+
+fn compress_layout_runs(layout: &[MergePageRef]) -> Vec<LayoutRun> {
+    let mut runs: Vec<LayoutRun> = Vec::new();
+    for r in layout {
+        if let Some(last) = runs.last_mut() {
+            if last.doc == r.doc && r.page == last.end.saturating_add(1) {
+                last.end = r.page;
+                continue;
+            }
+        }
+
+        runs.push(LayoutRun {
+            doc: r.doc.clone(),
+            start: r.page,
+            end: r.page,
+        });
+    }
+    runs
 }
 
 fn quality_to_gs_params(quality: u8) -> (i32, i32) {
@@ -190,17 +228,13 @@ pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
     Ok(output_path)
 }
 
-pub(crate) async fn ghostscript_render_page_png_with_timeout(
-    tmp: &TempDir,
+pub(crate) async fn ghostscript_render_page_png_to_path_with_timeout(
     input_path: &Path,
     page: usize,
     dpi: i32,
+    output_path: &Path,
     process_timeout: Duration,
-) -> Result<PathBuf, AppError> {
-    let output_path = tmp
-        .path()
-        .join(format!("page_{}_{}.png", page, uuid::Uuid::new_v4()));
-
+) -> Result<(), AppError> {
     let mut cmd = Command::new("gs");
     cmd.arg("-q")
         .arg("-dSAFER")
@@ -225,7 +259,7 @@ pub(crate) async fn ghostscript_render_page_png_with_timeout(
         return Err(AppError::Internal(format!("ghostscript failed: {stderr}")));
     }
 
-    Ok(output_path)
+    Ok(())
 }
 
 async fn output_with_timeout(
@@ -264,4 +298,66 @@ fn truncate_for_log(s: &str) -> String {
         end = idx;
     }
     format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compress_layout_runs, MergePageRef};
+
+    #[test]
+    fn compress_layout_runs_makes_ranges_for_consecutive_pages() {
+        let layout = vec![
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 1,
+            },
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 2,
+            },
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 3,
+            },
+            MergePageRef {
+                doc: "b".to_string(),
+                page: 10,
+            },
+            MergePageRef {
+                doc: "b".to_string(),
+                page: 11,
+            },
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 4,
+            },
+        ];
+
+        let runs = compress_layout_runs(&layout);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].doc, "a");
+        assert_eq!(runs[0].spec(), "1-3");
+        assert_eq!(runs[1].doc, "b");
+        assert_eq!(runs[1].spec(), "10-11");
+        assert_eq!(runs[2].doc, "a");
+        assert_eq!(runs[2].spec(), "4");
+    }
+
+    #[test]
+    fn compress_layout_runs_does_not_merge_non_consecutive_pages() {
+        let layout = vec![
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 1,
+            },
+            MergePageRef {
+                doc: "a".to_string(),
+                page: 3,
+            },
+        ];
+        let runs = compress_layout_runs(&layout);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].spec(), "1");
+        assert_eq!(runs[1].spec(), "3");
+    }
 }

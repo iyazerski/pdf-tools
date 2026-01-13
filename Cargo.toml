@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.7", features = ["multipart", "macros"] }
 base64 = "0.22"
-bytes = "1"
 dotenvy = "0.15"
 hmac = "0.12"
 mime = "0.3"
