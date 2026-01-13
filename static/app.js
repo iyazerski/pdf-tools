@@ -550,13 +550,6 @@
       renderList();
     } catch (err) {
       showToast(err && err.message ? err.message : "Failed to read pages.");
-      const cur = docs.get(docId);
-      if (cur && cur.pages == null) {
-        cur.pages = 1;
-        cur.uploadId = null;
-        docs.set(docId, cur);
-        renderList();
-      }
     }
   }
 
@@ -718,19 +711,24 @@
     mergeBtn.textContent = "Downloading…";
     try {
       const usedDocs = new Set(layout.map((x) => x.doc));
-      const fd = new FormData();
-      fd.append("quality", String(quality.value));
-      fd.append("linearize", linearize && linearize.checked ? "1" : "0");
-      fd.append("layout", JSON.stringify(layout));
+      const uploads = {};
       for (const docId of usedDocs) {
         const d = docs.get(docId);
-        if (!d) continue;
-        fd.append(`file_${docId}`, d.file, d.name);
+        if (!d || !d.uploadId) throw new Error("Some files are not uploaded yet.");
+        uploads[docId] = d.uploadId;
       }
+
+      const payload = {
+        quality: Number(quality.value),
+        linearize: Boolean(linearize && linearize.checked),
+        layout,
+        uploads,
+      };
 
       const res = await fetch("/api/merge", {
         method: "POST",
-        body: fd,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
         credentials: "same-origin",
       });
       if (res.status === 401) {

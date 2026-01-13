@@ -11,6 +11,17 @@ use crate::error::AppError;
 use crate::session::SessionSigner;
 use crate::uploads::UploadStore;
 
+pub(crate) struct AppStateArgs {
+    pub(crate) username: String,
+    pub(crate) password: String,
+    pub(crate) session_secret: Vec<u8>,
+    pub(crate) session_ttl: Duration,
+    pub(crate) process_timeout: StdDuration,
+    pub(crate) upload_cache_ttl: StdDuration,
+    pub(crate) cookie_secure: CookieSecureMode,
+    pub(crate) trust_proxy_headers: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) auth: Arc<AuthConfig>,
@@ -31,25 +42,22 @@ pub(crate) struct CookieConfig {
 }
 
 impl AppState {
-    pub(crate) fn new(
-        username: String,
-        password: String,
-        session_secret: Vec<u8>,
-        session_ttl: Duration,
-        process_timeout: StdDuration,
-        upload_cache_ttl: StdDuration,
-        cookie_secure: CookieSecureMode,
-        trust_proxy_headers: bool,
-    ) -> Self {
+    pub(crate) fn new(args: AppStateArgs) -> Self {
         Self {
-            auth: Arc::new(AuthConfig { username, password }),
-            signer: Arc::new(SessionSigner::new(session_secret, session_ttl)),
-            cookie: Arc::new(CookieConfig {
-                secure: cookie_secure,
-                trust_proxy_headers,
+            auth: Arc::new(AuthConfig {
+                username: args.username,
+                password: args.password,
             }),
-            process_timeout,
-            uploads: Arc::new(UploadStore::new(upload_cache_ttl, UPLOAD_CACHE_MAX_ENTRIES)),
+            signer: Arc::new(SessionSigner::new(args.session_secret, args.session_ttl)),
+            cookie: Arc::new(CookieConfig {
+                secure: args.cookie_secure,
+                trust_proxy_headers: args.trust_proxy_headers,
+            }),
+            process_timeout: args.process_timeout,
+            uploads: Arc::new(UploadStore::new(
+                args.upload_cache_ttl,
+                UPLOAD_CACHE_MAX_ENTRIES,
+            )),
         }
     }
 

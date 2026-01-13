@@ -130,19 +130,19 @@ mod tests {
 
     use crate::app::build_router;
     use crate::config::CookieSecureMode;
-    use crate::state::AppState;
+    use crate::state::{AppState, AppStateArgs};
 
     fn test_state(trust_proxy_headers: bool) -> AppState {
-        AppState::new(
-            "test".to_string(),
-            "test".to_string(),
-            b"secret".to_vec(),
-            Duration::hours(1),
-            std::time::Duration::from_secs(30),
-            std::time::Duration::from_secs(60),
-            CookieSecureMode::Never,
+        AppState::new(AppStateArgs {
+            username: "test".to_string(),
+            password: "test".to_string(),
+            session_secret: b"secret".to_vec(),
+            session_ttl: Duration::hours(1),
+            process_timeout: std::time::Duration::from_secs(30),
+            upload_cache_ttl: std::time::Duration::from_secs(60),
+            cookie_secure: CookieSecureMode::Never,
             trust_proxy_headers,
-        )
+        })
     }
 
     #[tokio::test]

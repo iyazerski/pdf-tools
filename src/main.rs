@@ -18,7 +18,7 @@ mod util;
 
 use crate::config::AppConfig;
 use crate::shutdown::shutdown_signal;
-use crate::state::AppState;
+use crate::state::{AppState, AppStateArgs};
 
 #[tokio::main]
 async fn main() {
@@ -27,16 +27,16 @@ async fn main() {
     let _ = dotenvy::dotenv();
 
     let config = AppConfig::from_env();
-    let state = AppState::new(
-        config.username,
-        config.password,
-        config.session_secret.into_bytes(),
-        Duration::hours(24),
-        config.process_timeout,
-        config.upload_cache_ttl,
-        config.cookie_secure,
-        config.trust_proxy_headers,
-    );
+    let state = AppState::new(AppStateArgs {
+        username: config.username,
+        password: config.password,
+        session_secret: config.session_secret.into_bytes(),
+        session_ttl: Duration::hours(24),
+        process_timeout: config.process_timeout,
+        upload_cache_ttl: config.upload_cache_ttl,
+        cookie_secure: config.cookie_secure,
+        trust_proxy_headers: config.trust_proxy_headers,
+    });
 
     let app = app::build_router(state);
 

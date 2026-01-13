@@ -1,6 +1,8 @@
 use std::env;
 use std::time::Duration;
 
+use crate::util::parse_bool_loose;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CookieSecureMode {
     Auto,
@@ -63,10 +65,7 @@ fn env_u64_or(key: &str, default: u64) -> u64 {
 
 fn env_bool_or(key: &str, default: bool) -> bool {
     match env::var(key) {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            matches!(v.as_str(), "1" | "true" | "on" | "yes")
-        }
+        Ok(v) => parse_bool_loose(&v),
         Err(_) => default,
     }
 }
