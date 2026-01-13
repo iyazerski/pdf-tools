@@ -6,8 +6,10 @@ use tower_cookies::Cookies;
 
 use crate::config::CookieSecureMode;
 use crate::constants::SESSION_COOKIE_NAME;
+use crate::constants::UPLOAD_CACHE_MAX_ENTRIES;
 use crate::error::AppError;
 use crate::session::SessionSigner;
+use crate::uploads::UploadStore;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -15,6 +17,7 @@ pub(crate) struct AppState {
     pub(crate) signer: Arc<SessionSigner>,
     pub(crate) cookie: Arc<CookieConfig>,
     pub(crate) process_timeout: StdDuration,
+    pub(crate) uploads: Arc<UploadStore>,
 }
 
 pub(crate) struct AuthConfig {
@@ -34,6 +37,7 @@ impl AppState {
         session_secret: Vec<u8>,
         session_ttl: Duration,
         process_timeout: StdDuration,
+        upload_cache_ttl: StdDuration,
         cookie_secure: CookieSecureMode,
         trust_proxy_headers: bool,
     ) -> Self {
@@ -45,6 +49,7 @@ impl AppState {
                 trust_proxy_headers,
             }),
             process_timeout,
+            uploads: Arc::new(UploadStore::new(upload_cache_ttl, UPLOAD_CACHE_MAX_ENTRIES)),
         }
     }
 

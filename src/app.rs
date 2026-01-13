@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, Request};
 use axum::response::Redirect;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
@@ -13,10 +13,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
-use crate::constants::{
-    API_RATE_LIMIT_BURST, API_RATE_LIMIT_RPS, GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS,
-    LOGIN_RATE_LIMIT_BURST, LOGIN_RATE_LIMIT_RPS, MAX_BODY_BYTES,
-};
+use crate::constants::{GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -68,26 +65,6 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let global_governor = GovernorLayer {
         config: global_governor_config.clone(),
     };
-    let login_governor = GovernorLayer {
-        config: Arc::new(
-            GovernorConfigBuilder::default()
-                .key_extractor(key_extractor)
-                .per_second(LOGIN_RATE_LIMIT_RPS)
-                .burst_size(LOGIN_RATE_LIMIT_BURST)
-                .finish()
-                .expect("governor config must build"),
-        ),
-    };
-    let api_governor = GovernorLayer {
-        config: Arc::new(
-            GovernorConfigBuilder::default()
-                .key_extractor(key_extractor)
-                .per_second(API_RATE_LIMIT_RPS)
-                .burst_size(API_RATE_LIMIT_BURST)
-                .finish()
-                .expect("governor config must build"),
-        ),
-    };
 
     let global_governor_for_health = GovernorLayer {
         config: global_governor_config,
@@ -103,9 +80,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         );
 
-    let login_routes = Router::new()
-        .route("/login", post(handlers::auth::login))
-        .route_layer(login_governor);
+    let login_routes = Router::new().route("/login", post(handlers::auth::login));
     let auth_routes = Router::new()
         .merge(login_routes)
         .route("/logout", post(handlers::auth::logout));
@@ -113,7 +88,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/merge", post(handlers::api::merge))
         .route("/npages", post(handlers::api::npages))
-        .route_layer(api_governor);
+        .route("/page/:upload_id/:page", get(handlers::api::page_png))
+        .route("/upload/:upload_id", delete(handlers::api::delete_upload));
 
     let app_routes = Router::new()
         .route("/", get(handlers::root::index))
@@ -163,6 +139,7 @@ mod tests {
             b"secret".to_vec(),
             Duration::hours(1),
             std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(60),
             CookieSecureMode::Never,
             trust_proxy_headers,
         )
@@ -194,11 +171,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_is_rate_limited() {
+    async fn login_is_rate_limited_by_global_governor() {
         let app = build_router(test_state(true));
 
         let mut saw_429 = false;
-        for _ in 0..200 {
+        for _ in 0..700 {
             let req = Request::builder()
                 .method("POST")
                 .uri("/login")
@@ -219,11 +196,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_is_rate_limited() {
+    async fn api_is_rate_limited_by_global_governor() {
         let app = build_router(test_state(true));
 
         let mut saw_429 = false;
-        for _ in 0..250 {
+        for _ in 0..700 {
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/npages")

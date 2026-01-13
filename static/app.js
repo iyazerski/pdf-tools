@@ -21,6 +21,12 @@
   const authError = document.getElementById("authError");
   const authUsername = document.getElementById("authUsername");
   const requestAccessLink = document.getElementById("requestAccessLink");
+  const previewModal = document.getElementById("previewModal");
+  const previewCloseBtn = document.getElementById("previewCloseBtn");
+  const previewTitle = document.getElementById("previewTitle");
+  const previewMeta = document.getElementById("previewMeta");
+  const previewLoading = document.getElementById("previewLoading");
+  const previewImg = document.getElementById("previewImg");
 
   const ACCESS_EMAIL = "ihar.yazerski@gmail.com";
   const LOGIN_ERROR_STORAGE_KEY = "pdf_tools_login_error";
@@ -49,6 +55,11 @@
     authError.hidden = false;
   }
 
+  function refreshModalOpenClass() {
+    const anyOpen = (authModal && !authModal.hidden) || (previewModal && !previewModal.hidden);
+    document.body.classList.toggle("modal-open", Boolean(anyOpen));
+  }
+
   function takePendingLoginErrorFromUrl() {
     const hasLoginError = document.body && document.body.dataset
       ? document.body.dataset.loginError === "1"
@@ -68,8 +79,9 @@
 
   function openAuthModal() {
     if (!authModal) return;
-    document.body.classList.add("modal-open");
+    closePreviewModal();
     authModal.hidden = false;
+    refreshModalOpenClass();
     if (requestAccessLink) requestAccessLink.href = buildAccessRequestMailto();
 
     let hasStoredLoginError = false;
@@ -88,9 +100,84 @@
 
   function closeAuthModal() {
     if (!authModal) return;
+    if (authModal.hidden) return;
     authModal.hidden = true;
-    document.body.classList.remove("modal-open");
+    refreshModalOpenClass();
     if (openAuthBtn) openAuthBtn.focus();
+  }
+
+  let previewObjectUrl = "";
+  let previewReq = 0;
+
+  function closePreviewModal() {
+    if (!previewModal) return;
+    previewModal.hidden = true;
+    refreshModalOpenClass();
+    if (previewObjectUrl) {
+      URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = "";
+    }
+    if (previewImg) {
+      previewImg.src = "";
+      previewImg.hidden = true;
+    }
+    if (previewLoading) previewLoading.hidden = false;
+  }
+
+  async function openPreview(docId, page) {
+    if (!isAuthed) {
+      openAuthModal();
+      return;
+    }
+
+    const d = docs.get(docId);
+    if (!d || !d.uploadId) {
+      showToast("Preview is not available yet.");
+      return;
+    }
+
+    if (!previewModal || !previewTitle || !previewMeta || !previewImg || !previewLoading) return;
+    closeAuthModal();
+
+    previewTitle.textContent = `Page ${page}`;
+    previewMeta.textContent = d.name;
+    previewImg.hidden = true;
+    previewLoading.hidden = false;
+
+    previewModal.hidden = false;
+    refreshModalOpenClass();
+
+    const reqId = ++previewReq;
+    try {
+      const url = `/api/page/${encodeURIComponent(d.uploadId)}/${page}?kind=full`;
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (res.status === 401) {
+        closePreviewModal();
+        openAuthModal();
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Preview failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+
+      if (reqId !== previewReq) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = objectUrl;
+      previewImg.src = objectUrl;
+      previewImg.hidden = false;
+      previewLoading.hidden = true;
+    } catch (err) {
+      if (reqId !== previewReq) return;
+      showToast(err && err.message ? err.message : "Preview failed.");
+      closePreviewModal();
+    }
   }
 
   function requireAuthForUpload() {
@@ -107,8 +194,16 @@
       if (e.target === authModal) closeAuthModal();
     });
   }
+  if (previewModal) {
+    previewModal.addEventListener("click", (e) => {
+      if (e.target === previewModal) closePreviewModal();
+    });
+  }
+  if (previewCloseBtn) previewCloseBtn.addEventListener("click", closePreviewModal);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && authModal && !authModal.hidden) closeAuthModal();
+    if (e.key !== "Escape") return;
+    if (previewModal && !previewModal.hidden) closePreviewModal();
+    else if (authModal && !authModal.hidden) closeAuthModal();
   });
 
   if (!isAuthed) {
@@ -119,7 +214,7 @@
   takePendingLoginErrorFromUrl();
 
   /**
-   * @typedef {{ id: string, file: File, name: string, size: number, pages: number | null }} Doc
+   * @typedef {{ id: string, file: File, name: string, size: number, pages: number | null, uploadId: string | null }} Doc
    * @typedef {{ id: string, type: "doc" | "header" | "page", docId: string, page?: number }} Node
    */
 
@@ -191,7 +286,21 @@
     estimatedSize.textContent = formatBytes(estimateOutputBytes());
   }
 
+  async function deleteUpload(uploadId) {
+    if (!uploadId) return;
+    try {
+      await fetch(`/api/upload/${encodeURIComponent(uploadId)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+
   function removeDocEverywhere(docId) {
+    const d = docs.get(docId);
+    if (d && d.uploadId) void deleteUpload(d.uploadId);
     docs.delete(docId);
     nodes = nodes.filter((n) => n.docId !== docId);
     renderList();
@@ -199,7 +308,11 @@
 
   function maybeCleanupDoc(docId) {
     const stillUsed = nodes.some((n) => n.docId === docId);
-    if (!stillUsed) docs.delete(docId);
+    if (!stillUsed) {
+      const d = docs.get(docId);
+      if (d && d.uploadId) void deleteUpload(d.uploadId);
+      docs.delete(docId);
+    }
   }
 
   function canCollapse(docId) {
@@ -288,6 +401,42 @@
       li.className = `file${n.type === "page" ? " page" : ""}${n.type === "header" ? " header" : ""}`;
       li.dataset.id = n.id;
       li.draggable = n.type !== "header";
+
+      if (n.type === "page") {
+        const thumb = document.createElement("button");
+        thumb.type = "button";
+        thumb.className = "thumb-btn";
+        const canPreview = Boolean(d.uploadId) && d.pages != null;
+        thumb.disabled = !canPreview;
+        thumb.setAttribute("aria-label", `Preview page ${n.page}`);
+        thumb.title = canPreview ? "Preview page" : "Preview not available yet";
+        thumb.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!canPreview) {
+            showToast("Preview is not available yet.");
+            return;
+          }
+          openPreview(n.docId, n.page);
+        });
+
+        if (canPreview) {
+          const img = document.createElement("img");
+          img.className = "thumb-img";
+          img.loading = "lazy";
+          img.decoding = "async";
+          img.alt = "";
+          img.src = `/api/page/${encodeURIComponent(d.uploadId)}/${n.page}?kind=thumb`;
+          thumb.appendChild(img);
+        } else {
+          const ph = document.createElement("div");
+          ph.className = "thumb-ph";
+          ph.textContent = "PDF";
+          thumb.appendChild(ph);
+        }
+
+        li.appendChild(thumb);
+      }
 
       const meta = document.createElement("div");
       meta.className = "meta";
@@ -389,10 +538,13 @@
       }
       const data = await res.json();
       const pages = Number(data.pages);
+      const uploadId = typeof data.upload_id === "string" ? data.upload_id : "";
       if (!Number.isFinite(pages) || pages <= 0) throw new Error("Invalid pages response");
+      if (!uploadId) throw new Error("Invalid upload id response");
       const cur = docs.get(docId);
       if (cur) {
         cur.pages = pages;
+        cur.uploadId = uploadId;
         docs.set(docId, cur);
       }
       renderList();
@@ -401,6 +553,7 @@
       const cur = docs.get(docId);
       if (cur && cur.pages == null) {
         cur.pages = 1;
+        cur.uploadId = null;
         docs.set(docId, cur);
         renderList();
       }
@@ -432,7 +585,7 @@
         continue;
       }
       const docId = uid();
-      docs.set(docId, { id: docId, file: f, name: f.name, size: f.size, pages: null });
+      docs.set(docId, { id: docId, file: f, name: f.name, size: f.size, pages: null, uploadId: null });
       nodes.push({ id: `d_${docId}`, type: "doc", docId });
       fetchNpages(docId);
     }
@@ -472,6 +625,9 @@
   }
 
   clearBtn.addEventListener("click", () => {
+    for (const d of docs.values()) {
+      if (d.uploadId) void deleteUpload(d.uploadId);
+    }
     nodes = [];
     docs.clear();
     renderList();

@@ -157,6 +157,7 @@ pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
 
     let mut cmd = Command::new("gs");
     cmd.arg("-q")
+        .arg("-dSAFER")
         .arg("-dNOPAUSE")
         .arg("-dBATCH")
         .arg("-sDEVICE=pdfwrite")
@@ -181,6 +182,44 @@ pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
 
     let output = output_with_timeout(cmd, process_timeout, "ghostscript").await?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(AppError::Internal(format!("ghostscript failed: {stderr}")));
+    }
+
+    Ok(output_path)
+}
+
+pub(crate) async fn ghostscript_render_page_png_with_timeout(
+    tmp: &TempDir,
+    input_path: &Path,
+    page: usize,
+    dpi: i32,
+    process_timeout: Duration,
+) -> Result<PathBuf, AppError> {
+    let output_path = tmp
+        .path()
+        .join(format!("page_{}_{}.png", page, uuid::Uuid::new_v4()));
+
+    let mut cmd = Command::new("gs");
+    cmd.arg("-q")
+        .arg("-dSAFER")
+        .arg("-dNOPAUSE")
+        .arg("-dBATCH")
+        // `pngalpha` yields transparent backgrounds; for many "programmatically generated" PDFs that
+        // don't paint a page background, this makes the preview inherit our dark UI background.
+        // Render an opaque image with a white background to match typical PDF viewers.
+        .arg("-dBackgroundColor=16#FFFFFF")
+        .arg("-sDEVICE=png16m")
+        .arg("-dTextAlphaBits=4")
+        .arg("-dGraphicsAlphaBits=4")
+        .arg(format!("-dFirstPage={page}"))
+        .arg(format!("-dLastPage={page}"))
+        .arg(format!("-r{dpi}"))
+        .arg(format!("-sOutputFile={}", output_path.to_string_lossy()))
+        .arg(input_path);
+
+    let output = output_with_timeout(cmd, process_timeout, "ghostscript").await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(AppError::Internal(format!("ghostscript failed: {stderr}")));

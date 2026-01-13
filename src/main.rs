@@ -13,6 +13,7 @@ mod pdf;
 mod session;
 mod shutdown;
 mod state;
+mod uploads;
 mod util;
 
 use crate::config::AppConfig;
@@ -32,6 +33,7 @@ async fn main() {
         config.session_secret.into_bytes(),
         Duration::hours(24),
         config.process_timeout,
+        config.upload_cache_ttl,
         config.cookie_secure,
         config.trust_proxy_headers,
     );

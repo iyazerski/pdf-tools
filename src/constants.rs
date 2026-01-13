@@ -4,11 +4,7 @@ pub(crate) const MAX_BODY_BYTES: usize = (MAX_PDFS * MAX_FILE_BYTES) + (5 * 1024
 
 pub(crate) const SESSION_COOKIE_NAME: &str = "pdf_tools_session";
 
+pub(crate) const UPLOAD_CACHE_MAX_ENTRIES: usize = 40;
+
 pub(crate) const GLOBAL_RATE_LIMIT_RPS: u64 = 100;
 pub(crate) const GLOBAL_RATE_LIMIT_BURST: u32 = 200;
-
-pub(crate) const LOGIN_RATE_LIMIT_RPS: u64 = 10;
-pub(crate) const LOGIN_RATE_LIMIT_BURST: u32 = 20;
-
-pub(crate) const API_RATE_LIMIT_RPS: u64 = 5;
-pub(crate) const API_RATE_LIMIT_BURST: u32 = 10;

@@ -14,6 +14,7 @@ pub(crate) struct AppConfig {
     pub(crate) session_secret: String,
     pub(crate) bind: String,
     pub(crate) process_timeout: Duration,
+    pub(crate) upload_cache_ttl: Duration,
     pub(crate) cookie_secure: CookieSecureMode,
     pub(crate) trust_proxy_headers: bool,
 }
@@ -25,6 +26,7 @@ impl AppConfig {
         let session_secret = required_env_non_empty("SESSION_SECRET");
         let bind = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8091".to_string());
         let process_timeout = env_u64_or("EXTERNAL_PROCESS_TIMEOUT_SECS", 120);
+        let upload_cache_ttl = env_u64_or("UPLOAD_CACHE_TTL_SECS", 20 * 60);
         let cookie_secure = cookie_secure_mode_from_env();
         let trust_proxy_headers = env_bool_or("TRUST_PROXY_HEADERS", false);
 
@@ -34,6 +36,7 @@ impl AppConfig {
             session_secret,
             bind,
             process_timeout: Duration::from_secs(process_timeout),
+            upload_cache_ttl: Duration::from_secs(upload_cache_ttl),
             cookie_secure,
             trust_proxy_headers,
         }

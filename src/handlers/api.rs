@@ -3,12 +3,13 @@ use std::path::PathBuf;
 
 use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
-use axum::extract::{Multipart, State};
-use axum::http::{header, HeaderValue};
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::Json;
 use bytes::Bytes;
+use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
@@ -26,6 +27,7 @@ use crate::util::parse_bool_loose;
 #[derive(Serialize)]
 pub(crate) struct NPagesResponse {
     pub(crate) pages: usize,
+    pub(crate) upload_id: String,
 }
 
 pub(crate) async fn npages(
@@ -90,12 +92,83 @@ pub(crate) async fn npages(
     };
 
     let pages = crate::pdf::qpdf_show_npages_with_timeout(&path, state.process_timeout).await?;
+    let upload_id = state.uploads.put_pdf(tmp, path, pages).await;
     info!(
         pages,
         file = %file_name.unwrap_or_else(|| "file.pdf".to_string()),
         "computed page count"
     );
-    Ok(Json(NPagesResponse { pages }).into_response())
+    Ok(Json(NPagesResponse { pages, upload_id }).into_response())
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PagePngQuery {
+    pub(crate) kind: Option<String>,
+}
+
+pub(crate) async fn page_png(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    Path((upload_id, page)): Path<(String, usize)>,
+    Query(query): Query<PagePngQuery>,
+) -> Result<Response, AppError> {
+    let _username = state.require_auth(&cookies)?;
+
+    let Some(upload) = state.uploads.get(&upload_id).await else {
+        return Err(AppError::BadRequest("Unknown upload id".to_string()));
+    };
+
+    if page == 0 || page > upload.pages {
+        return Err(AppError::BadRequest(format!(
+            "Invalid page (must be between 1 and {})",
+            upload.pages
+        )));
+    }
+
+    let dpi = match query.kind.as_deref() {
+        Some("thumb") => 40,
+        Some("full") => 144,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid kind (expected thumb|full, got {other})"
+            )));
+        }
+        None => 40,
+    };
+
+    let tmp = TempDir::new().map_err(|e| AppError::Internal(e.to_string()))?;
+    let png_path = crate::pdf::ghostscript_render_page_png_with_timeout(
+        &tmp,
+        &upload.pdf_path,
+        page,
+        dpi,
+        state.process_timeout,
+    )
+    .await?;
+
+    let bytes = tokio::fs::read(png_path)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let mut res = Response::new(Body::from(Bytes::from(bytes)));
+    *res.status_mut() = StatusCode::OK;
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=86400"),
+    );
+    Ok(res)
+}
+
+pub(crate) async fn delete_upload(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    Path(upload_id): Path<String>,
+) -> Result<Response, AppError> {
+    let _username = state.require_auth(&cookies)?;
+    let _ = state.uploads.remove(&upload_id).await;
+    Ok((StatusCode::NO_CONTENT, "").into_response())
 }
 
 pub(crate) async fn merge(

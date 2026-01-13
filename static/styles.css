@@ -240,6 +240,36 @@ body[data-authed="0"] .auth-when-authed{display:none !important}
 .file .sub{color:var(--muted); font-size: 12px}
 .file .tools{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}
 
+.thumb-btn{
+  width: 40px;
+  height: 52px;
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(0,0,0,.22);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform .08s ease, background .15s ease, border-color .15s ease, opacity .15s ease;
+}
+.thumb-btn:hover{background: rgba(0,0,0,.28)}
+.thumb-btn:active{transform: translateY(1px)}
+.thumb-btn[disabled]{opacity:.55; cursor:not-allowed}
+.thumb-img{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumb-ph{
+  color: rgba(255,255,255,.62);
+  font-weight: 900;
+  font-size: 11px;
+  letter-spacing: .2px;
+}
+
 .pill{
   display:inline-flex;
   align-items:center;
@@ -382,6 +412,10 @@ body.modal-open main.shell{
   max-width: 520px;
 }
 
+.modal-preview{
+  max-width: 980px;
+}
+
 .modal-head{
   display:flex;
   align-items:center;
@@ -389,6 +423,39 @@ body.modal-open main.shell{
   gap:12px;
 }
 .modal-title{font-weight:900}
+
+.preview-meta{
+  margin-top: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preview-stage{
+  margin-top: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.24);
+  overflow: hidden;
+  min-height: 220px;
+  max-height: min(72vh, 900px);
+  display: grid;
+  place-items: center;
+}
+
+.preview-loading{
+  color: rgba(255,255,255,.72);
+  font-weight: 900;
+  letter-spacing: .2px;
+}
+
+.preview-img{
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
 
 .access-row{
   display:flex;
