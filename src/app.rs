@@ -13,7 +13,10 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
-use crate::constants::{GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS, MAX_BODY_BYTES};
+use crate::constants::{
+    API_RATE_LIMIT_BURST, API_RATE_LIMIT_RPS, GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS,
+    LOGIN_RATE_LIMIT_BURST, LOGIN_RATE_LIMIT_RPS, MAX_BODY_BYTES,
+};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -27,7 +30,7 @@ impl KeyExtractor for ProxyAwareIpKeyExtractor {
 
     fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, tower_governor::GovernorError> {
         if self.trust_proxy_headers {
-            if let Some(ip) = x_forwarded_for_rightmost(req.headers()) {
+            if let Some(ip) = x_forwarded_for_leftmost(req.headers()) {
                 return Ok(ip);
             }
         }
@@ -39,13 +42,12 @@ impl KeyExtractor for ProxyAwareIpKeyExtractor {
     }
 }
 
-fn x_forwarded_for_rightmost(headers: &HeaderMap) -> Option<std::net::IpAddr> {
+fn x_forwarded_for_leftmost(headers: &HeaderMap) -> Option<std::net::IpAddr> {
     headers
         .get("x-forwarded-for")
         .and_then(|hv| hv.to_str().ok())
         .and_then(|s| {
             s.split(',')
-                .rev()
                 .find_map(|part| part.trim().parse::<std::net::IpAddr>().ok())
         })
 }
@@ -55,22 +57,23 @@ pub(crate) fn build_router(state: AppState) -> Router {
         trust_proxy_headers: state.cookie.trust_proxy_headers,
     };
 
+    let global_governor_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .key_extractor(key_extractor)
+            .per_second(GLOBAL_RATE_LIMIT_RPS)
+            .burst_size(GLOBAL_RATE_LIMIT_BURST)
+            .finish()
+            .expect("governor config must build"),
+    );
     let global_governor = GovernorLayer {
-        config: Arc::new(
-            GovernorConfigBuilder::default()
-                .key_extractor(key_extractor)
-                .per_second(GLOBAL_RATE_LIMIT_RPS)
-                .burst_size(GLOBAL_RATE_LIMIT_BURST)
-                .finish()
-                .expect("governor config must build"),
-        ),
+        config: global_governor_config.clone(),
     };
     let login_governor = GovernorLayer {
         config: Arc::new(
             GovernorConfigBuilder::default()
                 .key_extractor(key_extractor)
-                .per_second(1)
-                .burst_size(3)
+                .per_second(LOGIN_RATE_LIMIT_RPS)
+                .burst_size(LOGIN_RATE_LIMIT_BURST)
                 .finish()
                 .expect("governor config must build"),
         ),
@@ -79,12 +82,26 @@ pub(crate) fn build_router(state: AppState) -> Router {
         config: Arc::new(
             GovernorConfigBuilder::default()
                 .key_extractor(key_extractor)
-                .per_second(2)
-                .burst_size(10)
+                .per_second(API_RATE_LIMIT_RPS)
+                .burst_size(API_RATE_LIMIT_BURST)
                 .finish()
                 .expect("governor config must build"),
         ),
     };
+
+    let global_governor_for_health = GovernorLayer {
+        config: global_governor_config,
+    };
+
+    let health_routes = Router::new()
+        .route("/healthz", get(handlers::health::healthz))
+        .layer(global_governor_for_health)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
+                .on_response(DefaultOnResponse::new().level(Level::DEBUG))
+                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        );
 
     let login_routes = Router::new()
         .route("/login", post(handlers::auth::login))
@@ -98,7 +115,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/npages", post(handlers::api::npages))
         .route_layer(api_governor);
 
-    Router::new()
+    let app_routes = Router::new()
         .route("/", get(handlers::root::index))
         .route_service("/favicon.svg", ServeFile::new("static/favicon.svg"))
         .route(
@@ -109,18 +126,123 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route_service("/robots.txt", ServeFile::new("static/robots.txt"))
         .route_service("/sitemap.xml", ServeFile::new("static/sitemap.xml"))
         .nest_service("/static", ServeDir::new("static"))
-        .route("/healthz", get(handlers::health::healthz))
         .merge(auth_routes)
         .nest("/api", api_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-        .with_state(state)
-        .layer(tower_cookies::CookieManagerLayer::new())
         .layer(global_governor)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        );
+
+    Router::new()
+        .merge(health_routes)
+        .merge(app_routes)
+        .with_state(state)
+        .layer(tower_cookies::CookieManagerLayer::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use time::Duration;
+    use tower::ServiceExt;
+
+    use crate::app::build_router;
+    use crate::config::CookieSecureMode;
+    use crate::state::AppState;
+
+    fn test_state(trust_proxy_headers: bool) -> AppState {
+        AppState::new(
+            "test".to_string(),
+            "test".to_string(),
+            b"secret".to_vec(),
+            Duration::hours(1),
+            std::time::Duration::from_secs(30),
+            CookieSecureMode::Never,
+            trust_proxy_headers,
         )
+    }
+
+    #[tokio::test]
+    async fn healthz_is_rate_limited_by_global_governor() {
+        let app = build_router(test_state(true));
+
+        let mut saw_429 = false;
+        for _ in 0..500 {
+            let req = Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .header("x-forwarded-for", "1.2.3.4")
+                .body(Body::empty())
+                .expect("request must build");
+            let res = app
+                .clone()
+                .oneshot(req)
+                .await
+                .expect("request must succeed");
+            if res.status() == StatusCode::TOO_MANY_REQUESTS {
+                saw_429 = true;
+                break;
+            }
+        }
+        assert!(saw_429, "expected /healthz to eventually be rate limited");
+    }
+
+    #[tokio::test]
+    async fn login_is_rate_limited() {
+        let app = build_router(test_state(true));
+
+        let mut saw_429 = false;
+        for _ in 0..200 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header("x-forwarded-for", "1.2.3.4")
+                .body(Body::empty())
+                .expect("request must build");
+            let res = app
+                .clone()
+                .oneshot(req)
+                .await
+                .expect("request must succeed");
+            if res.status() == StatusCode::TOO_MANY_REQUESTS {
+                saw_429 = true;
+                break;
+            }
+        }
+        assert!(saw_429, "expected /login to eventually be rate limited");
+    }
+
+    #[tokio::test]
+    async fn api_is_rate_limited() {
+        let app = build_router(test_state(true));
+
+        let mut saw_429 = false;
+        for _ in 0..250 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/npages")
+                .header("x-forwarded-for", "1.2.3.4")
+                .body(Body::empty())
+                .expect("request must build");
+            let res = app
+                .clone()
+                .oneshot(req)
+                .await
+                .expect("request must succeed");
+            if res.status() == StatusCode::TOO_MANY_REQUESTS {
+                saw_429 = true;
+                break;
+            }
+        }
+        assert!(
+            saw_429,
+            "expected /api/npages to eventually be rate limited"
+        );
+    }
 }
