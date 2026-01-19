@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, Request};
@@ -10,12 +11,29 @@ use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{
+    DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, OnResponse, TraceLayer,
+};
 use tracing::Level;
 
 use crate::constants::{GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
+
+#[derive(Clone, Copy, Debug)]
+struct HealthOnResponse;
+
+impl<B> OnResponse<B> for HealthOnResponse {
+    fn on_response(self, response: &axum::http::Response<B>, latency: Duration, _: &tracing::Span) {
+        if !response.status().is_success() {
+            tracing::warn!(
+                status = %response.status(),
+                latency_ms = latency.as_millis(),
+                "health check returned non-2xx response"
+            );
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProxyAwareIpKeyExtractor {
@@ -27,7 +45,7 @@ impl KeyExtractor for ProxyAwareIpKeyExtractor {
 
     fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, tower_governor::GovernorError> {
         if self.trust_proxy_headers {
-            if let Some(ip) = x_forwarded_for_leftmost(req.headers()) {
+            if let Some(ip) = x_forwarded_for_rightmost(req.headers()) {
                 return Ok(ip);
             }
         }
@@ -39,12 +57,13 @@ impl KeyExtractor for ProxyAwareIpKeyExtractor {
     }
 }
 
-fn x_forwarded_for_leftmost(headers: &HeaderMap) -> Option<std::net::IpAddr> {
+fn x_forwarded_for_rightmost(headers: &HeaderMap) -> Option<std::net::IpAddr> {
     headers
         .get("x-forwarded-for")
         .and_then(|hv| hv.to_str().ok())
         .and_then(|s| {
             s.split(',')
+                .rev()
                 .find_map(|part| part.trim().parse::<std::net::IpAddr>().ok())
         })
 }
@@ -66,17 +85,12 @@ pub(crate) fn build_router(state: AppState) -> Router {
         config: global_governor_config.clone(),
     };
 
-    let global_governor_for_health = GovernorLayer {
-        config: global_governor_config,
-    };
-
     let health_routes = Router::new()
         .route("/healthz", get(handlers::health::healthz))
-        .layer(global_governor_for_health)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
-                .on_response(DefaultOnResponse::new().level(Level::DEBUG))
+                .on_response(HealthOnResponse)
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         );
 
@@ -112,13 +126,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
-        );
+        )
+        .layer(tower_cookies::CookieManagerLayer::new());
 
     Router::new()
         .merge(health_routes)
         .merge(app_routes)
         .with_state(state)
-        .layer(tower_cookies::CookieManagerLayer::new())
 }
 
 #[cfg(test)]
@@ -146,7 +160,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn healthz_is_rate_limited_by_global_governor() {
+    async fn healthz_is_not_rate_limited() {
         let app = build_router(test_state(true));
 
         let mut saw_429 = false;
@@ -167,7 +181,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_429, "expected /healthz to eventually be rate limited");
+        assert!(
+            !saw_429,
+            "expected /healthz to never be rate limited (it is used by liveness/readiness probes)"
+        );
     }
 
     #[tokio::test]
