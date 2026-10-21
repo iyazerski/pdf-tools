@@ -3,6 +3,7 @@ kind: Middleware
 metadata:
   name: https-redirect
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   redirectScheme:
@@ -14,6 +15,7 @@ kind: Middleware
 metadata:
   name: security-headers
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   headers:
@@ -27,6 +29,7 @@ kind: Middleware
 metadata:
   name: compress
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   compress:
@@ -46,6 +49,7 @@ kind: ServersTransport
 metadata:
   name: pdf-tools-transport
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   forwardingTimeouts:

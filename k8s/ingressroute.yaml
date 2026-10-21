@@ -3,6 +3,7 @@ kind: IngressRoute
 metadata:
   name: pdf-tools-web
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   entryPoints:
@@ -22,6 +23,7 @@ kind: IngressRoute
 metadata:
   name: pdf-tools-websecure
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   entryPoints:

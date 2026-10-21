@@ -3,6 +3,7 @@ kind: Deployment
 metadata:
   name: pdf-tools
   labels:
+    app.kubernetes.io/part-of: pdf-tools
     app: pdf-tools
 spec:
   replicas: 1
