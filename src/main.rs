@@ -4,11 +4,11 @@ use time::Duration;
 use tracing::info;
 
 mod app;
+mod assets;
 mod config;
 mod constants;
 mod error;
 mod handlers;
-mod pages;
 mod pdf;
 mod session;
 mod shutdown;
@@ -26,6 +26,7 @@ async fn main() {
 
     let _ = dotenvy::dotenv();
 
+    assets::init();
     let config = AppConfig::from_env();
     let state = AppState::new(AppStateArgs {
         username: config.username,

@@ -9,12 +9,12 @@ use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorLayer;
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{
     DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, OnResponse, TraceLayer,
 };
 use tracing::Level;
 
+use crate::assets;
 use crate::constants::{LOGIN_RATE_LIMIT_BURST, LOGIN_RATE_LIMIT_PERIOD, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
@@ -106,15 +106,16 @@ pub(crate) fn build_router(state: AppState) -> Router {
 
     let app_routes = Router::new()
         .route("/", get(handlers::root::index))
-        .route_service("/favicon.svg", ServeFile::new("static/favicon.svg"))
+        .route("/static/app.js", get(assets::app_js))
+        .route("/static/styles.css", get(assets::styles_css))
+        .route("/favicon.svg", get(assets::favicon_svg))
         .route(
             "/favicon.ico",
             get(|| async { Redirect::permanent("/favicon.svg") }),
         )
-        .route_service("/og-image.svg", ServeFile::new("static/og-image.svg"))
-        .route_service("/robots.txt", ServeFile::new("static/robots.txt"))
-        .route_service("/sitemap.xml", ServeFile::new("static/sitemap.xml"))
-        .nest_service("/static", ServeDir::new("static"))
+        .route("/og-image.svg", get(assets::og_image_svg))
+        .route("/robots.txt", get(assets::robots_txt))
+        .route("/sitemap.xml", get(assets::sitemap_xml))
         .merge(auth_routes)
         .nest("/api", api_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

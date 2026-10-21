@@ -49,7 +49,7 @@ async fn write_validated_pdf_field_to_path(
         .unwrap_or_default();
     let file_name = field.file_name().unwrap_or("file.pdf").to_string();
 
-    if !content_type.is_empty() && content_type != mime::APPLICATION_PDF.essence_str() {
+    if !content_type.is_empty() && content_type != "application/pdf" {
         return Err(AppError::BadRequest(format!(
             "Only PDF files are allowed (got {content_type} for {file_name})"
         )));
