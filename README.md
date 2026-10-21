@@ -10,7 +10,7 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 - Reorder PDFs (drag to reorder)
 - Page-level editing (expand document, reorder/remove pages, insert another document between pages)
 - Merge into a single PDF in the selected order
-- Quality slider controls Ghostscript downsampling/JPEG quality
+- Quality slider controls Ghostscript downsampling/JPEG quality (100 = original, no recompression)
 - Optional linearization for fast web view
 - No persistence: nothing stored beyond each request; refresh clears client-side list
 
@@ -58,6 +58,12 @@ Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
 - `APP_USERNAME` / `APP_PASSWORD` (required)
 - `SESSION_SECRET` (required; random long string)
 - `BIND_ADDR` (default `0.0.0.0:8091`)
+- `UPLOAD_CACHE_TTL_SECS` (default `1200`; idle uploads are deleted after this)
+- `EXTERNAL_PROCESS_TIMEOUT_SECS` (default `120`; per gs/qpdf run)
+- `COOKIE_SECURE` (`auto` | `true` | `false`, default `auto`)
+- `TRUST_PROXY_HEADERS` (default `false`; set when behind Traefik)
+
+Static assets and the page template are compiled into the binary, so changes need a rebuild.
 
 ## Kubernetes + GitHub Actions
 

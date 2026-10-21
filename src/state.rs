@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
@@ -22,39 +23,44 @@ pub(crate) struct AppStateArgs {
     pub(crate) trust_proxy_headers: bool,
 }
 
+/// Shared app state; cloning it per request is a single reference-count bump.
 #[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) credentials: Arc<Credentials>,
-    pub(crate) signer: Arc<SessionSigner>,
-    pub(crate) cookie: Arc<CookieConfig>,
+pub(crate) struct AppState(Arc<AppStateInner>);
+
+pub(crate) struct AppStateInner {
+    pub(crate) credentials: Credentials,
+    pub(crate) signer: SessionSigner,
+    pub(crate) cookie_secure: CookieSecureMode,
+    pub(crate) trust_proxy_headers: bool,
     pub(crate) process_timeout: StdDuration,
     pub(crate) uploads: Arc<UploadStore>,
 }
 
-pub(crate) struct CookieConfig {
-    pub(crate) secure: CookieSecureMode,
-    pub(crate) trust_proxy_headers: bool,
+impl Deref for AppState {
+    type Target = AppStateInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl AppState {
     pub(crate) fn new(args: AppStateArgs) -> Self {
-        Self {
-            credentials: Arc::new(Credentials::new(
+        Self(Arc::new(AppStateInner {
+            credentials: Credentials::new(
                 &args.username,
                 &args.password,
                 args.session_secret.clone(),
-            )),
-            signer: Arc::new(SessionSigner::new(args.session_secret, args.session_ttl)),
-            cookie: Arc::new(CookieConfig {
-                secure: args.cookie_secure,
-                trust_proxy_headers: args.trust_proxy_headers,
-            }),
+            ),
+            signer: SessionSigner::new(args.session_secret, args.session_ttl),
+            cookie_secure: args.cookie_secure,
+            trust_proxy_headers: args.trust_proxy_headers,
             process_timeout: args.process_timeout,
             uploads: Arc::new(UploadStore::new(
                 args.upload_cache_ttl,
                 UPLOAD_CACHE_MAX_ENTRIES,
             )),
-        }
+        }))
     }
 
     pub(crate) fn authed_username(&self, cookies: &Cookies) -> Option<String> {

@@ -52,7 +52,6 @@ pub(crate) async fn logout(
     cookies: Cookies,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let _ = state.authed_username(&cookies);
     let mut cookie = Cookie::new(SESSION_COOKIE_NAME, "");
     cookie.set_path("/");
     cookie.set_secure(cookie_should_be_secure(&state, &headers));
@@ -62,11 +61,11 @@ pub(crate) async fn logout(
 }
 
 fn cookie_should_be_secure(state: &AppState, headers: &HeaderMap) -> bool {
-    match state.cookie.secure {
+    match state.cookie_secure {
         crate::config::CookieSecureMode::Always => true,
         crate::config::CookieSecureMode::Never => false,
         crate::config::CookieSecureMode::Auto => {
-            state.cookie.trust_proxy_headers && forwarded_proto_is_https(headers)
+            state.trust_proxy_headers && forwarded_proto_is_https(headers)
         }
     }
 }

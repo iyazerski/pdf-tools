@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderMap, Request};
 use axum::response::Redirect;
@@ -8,31 +6,13 @@ use axum::Router;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::GovernorLayer;
-use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::trace::{
-    DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, OnResponse, TraceLayer,
-};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::assets;
 use crate::constants::{LOGIN_RATE_LIMIT_BURST, LOGIN_RATE_LIMIT_PERIOD, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
-
-#[derive(Clone, Copy, Debug)]
-struct HealthOnResponse;
-
-impl<B> OnResponse<B> for HealthOnResponse {
-    fn on_response(self, response: &axum::http::Response<B>, latency: Duration, _: &tracing::Span) {
-        if !response.status().is_success() {
-            tracing::warn!(
-                status = %response.status(),
-                latency_ms = latency.as_millis(),
-                "health check returned non-2xx response"
-            );
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProxyAwareIpKeyExtractor {
@@ -69,7 +49,7 @@ fn x_forwarded_for_rightmost(headers: &HeaderMap) -> Option<std::net::IpAddr> {
 
 pub(crate) fn build_router(state: AppState) -> Router {
     let key_extractor = ProxyAwareIpKeyExtractor {
-        trust_proxy_headers: state.cookie.trust_proxy_headers,
+        trust_proxy_headers: state.trust_proxy_headers,
     };
 
     // Only login needs throttling (password guessing); limiting the API would break bursts of
@@ -82,30 +62,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .expect("governor config must build");
     let login_governor = GovernorLayer::new(login_governor_config);
 
-    let health_routes = Router::new()
+    // Probes and static assets are routed outside the request trace layer to keep logs useful.
+    let untraced_routes = Router::new()
         .route("/healthz", get(handlers::health::healthz))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
-                .on_response(HealthOnResponse)
-                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
-        );
-
-    let login_routes = Router::new()
-        .route("/login", post(handlers::auth::login))
-        .layer(login_governor);
-    let auth_routes = Router::new()
-        .merge(login_routes)
-        .route("/logout", post(handlers::auth::logout));
-
-    let api_routes = Router::new()
-        .route("/merge", post(handlers::api::merge))
-        .route("/npages", post(handlers::api::npages))
-        .route("/page/{upload_id}/{page}", get(handlers::api::page_image))
-        .route("/upload/{upload_id}", delete(handlers::api::delete_upload));
-
-    let app_routes = Router::new()
-        .route("/", get(handlers::root::index))
         .route("/static/app.js", get(assets::app_js))
         .route("/static/styles.css", get(assets::styles_css))
         .route("/favicon.svg", get(assets::favicon_svg))
@@ -115,11 +74,21 @@ pub(crate) fn build_router(state: AppState) -> Router {
         )
         .route("/og-image.svg", get(assets::og_image_svg))
         .route("/robots.txt", get(assets::robots_txt))
-        .route("/sitemap.xml", get(assets::sitemap_xml))
-        .merge(auth_routes)
+        .route("/sitemap.xml", get(assets::sitemap_xml));
+
+    let api_routes = Router::new()
+        .route("/merge", post(handlers::api::merge))
+        .route("/npages", post(handlers::api::npages))
+        .route("/page/{upload_id}/{page}", get(handlers::api::page_image))
+        .route("/upload/{upload_id}", delete(handlers::api::delete_upload));
+
+    let app_routes = Router::new()
+        .route("/", get(handlers::root::index))
+        .route("/login", post(handlers::auth::login).layer(login_governor))
+        .route("/logout", post(handlers::auth::logout))
         .nest("/api", api_routes)
+        // Enforced by the Multipart, Json and Form extractors.
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
@@ -129,7 +98,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .layer(tower_cookies::CookieManagerLayer::new());
 
     Router::new()
-        .merge(health_routes)
+        .merge(untraced_routes)
         .merge(app_routes)
         .with_state(state)
 }

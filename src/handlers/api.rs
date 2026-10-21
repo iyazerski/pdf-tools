@@ -107,10 +107,7 @@ async fn stream_file_response<K: Clone + Send + Sync + 'static>(
     *res.status_mut() = StatusCode::OK;
 
     let headers = res.headers_mut();
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&content_len.to_string()).map_err(internal)?,
-    );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_len));
     apply_headers(headers)?;
     Ok(res)
 }

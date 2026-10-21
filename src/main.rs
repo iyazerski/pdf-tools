@@ -59,5 +59,9 @@ async fn main() {
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs go to kubectl, not a terminal, so skip ANSI color codes.
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .init();
 }
