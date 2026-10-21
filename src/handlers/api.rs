@@ -139,16 +139,28 @@ pub(crate) async fn npages(
     Ok(Json(NPagesResponse { pages, upload_id }).into_response())
 }
 
-#[derive(Deserialize)]
-pub(crate) struct PagePngQuery {
-    pub(crate) kind: Option<String>,
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PageKind {
+    #[default]
+    Thumb,
+    Full,
 }
 
-pub(crate) async fn page_png(
+#[derive(Deserialize)]
+pub(crate) struct PageQuery {
+    #[serde(default)]
+    pub(crate) kind: PageKind,
+}
+
+const THUMB_DPI: u32 = 40;
+const FULL_DPI: u32 = 144;
+
+pub(crate) async fn page_image(
     State(state): State<AppState>,
     cookies: Cookies,
     AxumPath((upload_id, page)): AxumPath<(String, usize)>,
-    Query(query): Query<PagePngQuery>,
+    Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     let _username = state.require_auth(&cookies)?;
 
@@ -163,58 +175,56 @@ pub(crate) async fn page_png(
         )));
     }
 
-    let dpi = match query.kind.as_deref() {
-        Some("thumb") => 40,
-        Some("full") => 144,
-        Some(other) => {
-            return Err(AppError::BadRequest(format!(
-                "Invalid kind (expected thumb|full, got {other})"
-            )));
+    let image_path = match query.kind {
+        PageKind::Thumb => {
+            // One gs run for all pages is ~20x faster than one run per page, and avoids a
+            // burst of parallel processes when the client lazy-loads many thumbnails.
+            let dir = upload.dir.path().join("thumbs");
+            upload
+                .thumbs
+                .get_or_try_init(|| async {
+                    fs::create_dir_all(&dir).await.map_err(internal)?;
+                    crate::pdf::ghostscript_render_jpeg_with_timeout(
+                        &upload.pdf_path,
+                        None,
+                        THUMB_DPI,
+                        &dir.join("%d.jpg"),
+                        state.process_timeout,
+                    )
+                    .await
+                })
+                .await?;
+            dir.join(format!("{page}.jpg"))
         }
-        None => 40,
-    };
-
-    let cache_dir = upload.dir.path().join("render_cache");
-    fs::create_dir_all(&cache_dir).await.map_err(internal)?;
-    let cache_path = cache_dir.join(format!("page_{page}_dpi_{dpi}.png"));
-
-    let png_path = match fs::metadata(&cache_path).await {
-        Ok(_) => cache_path,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let tmp_path = cache_dir.join(format!(
-                "page_{page}_dpi_{dpi}.tmp_{}.png",
-                uuid::Uuid::new_v4()
-            ));
-            crate::pdf::ghostscript_render_page_png_to_path_with_timeout(
-                &upload.pdf_path,
-                page,
-                dpi,
-                &tmp_path,
-                state.process_timeout,
-            )
-            .await?;
-
-            // Best-effort atomic publish: if another request rendered concurrently, prefer the
-            // already-published cache file and clean up our temp file.
-            if let Err(e) = fs::rename(&tmp_path, &cache_path).await {
-                if fs::metadata(&cache_path).await.is_ok() {
-                    let _ = fs::remove_file(&tmp_path).await;
-                    cache_path
-                } else {
-                    return Err(internal(e));
-                }
+        PageKind::Full => {
+            let path = upload.dir.path().join(format!("full_{page}.jpg"));
+            if fs::try_exists(&path).await.map_err(internal)? {
+                path
             } else {
-                cache_path
+                let tmp_path = upload
+                    .dir
+                    .path()
+                    .join(format!("full_{page}.{}.tmp", uuid::Uuid::new_v4()));
+                crate::pdf::ghostscript_render_jpeg_with_timeout(
+                    &upload.pdf_path,
+                    Some(page),
+                    FULL_DPI,
+                    &tmp_path,
+                    state.process_timeout,
+                )
+                .await?;
+                // rename() replaces atomically, so a concurrent render of the same page is harmless.
+                fs::rename(&tmp_path, &path).await.map_err(internal)?;
+                path
             }
         }
-        Err(e) => return Err(internal(e)),
     };
 
-    stream_file_response(&png_path, upload.clone(), |headers| {
-        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    stream_file_response(&image_path, upload.clone(), |headers| {
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
         headers.insert(
             header::CACHE_CONTROL,
-            HeaderValue::from_static("private, max-age=86400"),
+            HeaderValue::from_static("private, max-age=86400, immutable"),
         );
         Ok(())
     })

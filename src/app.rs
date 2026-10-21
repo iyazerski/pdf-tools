@@ -97,7 +97,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/merge", post(handlers::api::merge))
         .route("/npages", post(handlers::api::npages))
-        .route("/page/{upload_id}/{page}", get(handlers::api::page_png))
+        .route("/page/{upload_id}/{page}", get(handlers::api::page_image))
         .route("/upload/{upload_id}", delete(handlers::api::delete_upload));
 
     let app_routes = Router::new()

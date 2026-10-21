@@ -7,10 +7,13 @@ use axum::extract::multipart::Field;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::constants::MAX_FILE_BYTES;
 use crate::error::AppError;
+
+static PROCESS_SLOTS: Semaphore = Semaphore::const_new(2);
 
 #[derive(serde::Deserialize)]
 pub(crate) struct MergePageRef {
@@ -199,10 +202,8 @@ pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
         .arg("-dNOPAUSE")
         .arg("-dBATCH")
         .arg("-sDEVICE=pdfwrite")
-        .arg("-dCompatibilityLevel=1.4")
-        .arg("-dDetectDuplicateImages=true")
-        .arg("-dCompressFonts=true")
-        .arg("-dSubsetFonts=true")
+        // Keep gs's default compatibility level: forcing 1.4 makes it re-encode ICC-based
+        // images (e.g. from macOS Preview) into files 100x+ larger and minutes slower.
         .arg("-dDownsampleColorImages=true")
         .arg("-dDownsampleGrayImages=true")
         .arg("-dDownsampleMonoImages=true")
@@ -228,10 +229,11 @@ pub(crate) async fn merge_with_ghostscript_to_file_with_timeout(
     Ok(output_path)
 }
 
-pub(crate) async fn ghostscript_render_page_png_to_path_with_timeout(
+/// Render pages to JPEG; `output_path` must contain `%d` when rendering more than one page.
+pub(crate) async fn ghostscript_render_jpeg_with_timeout(
     input_path: &Path,
-    page: usize,
-    dpi: i32,
+    pages: Option<usize>,
+    dpi: u32,
     output_path: &Path,
     process_timeout: Duration,
 ) -> Result<(), AppError> {
@@ -240,17 +242,18 @@ pub(crate) async fn ghostscript_render_page_png_to_path_with_timeout(
         .arg("-dSAFER")
         .arg("-dNOPAUSE")
         .arg("-dBATCH")
-        // `pngalpha` yields transparent backgrounds; for many "programmatically generated" PDFs that
-        // don't paint a page background, this makes the preview inherit our dark UI background.
-        // Render an opaque image with a white background to match typical PDF viewers.
-        .arg("-dBackgroundColor=16#FFFFFF")
-        .arg("-sDEVICE=png16m")
+        // JPEG is opaque with a white background, matching typical PDF viewers, and is far
+        // smaller than PNG for scanned or photo pages.
+        .arg("-sDEVICE=jpeg")
+        .arg("-dJPEGQ=85")
         .arg("-dTextAlphaBits=4")
         .arg("-dGraphicsAlphaBits=4")
-        .arg(format!("-dFirstPage={page}"))
-        .arg(format!("-dLastPage={page}"))
-        .arg(format!("-r{dpi}"))
-        .arg(format!("-sOutputFile={}", output_path.to_string_lossy()))
+        .arg(format!("-r{dpi}"));
+    if let Some(page) = pages {
+        cmd.arg(format!("-dFirstPage={page}"))
+            .arg(format!("-dLastPage={page}"));
+    }
+    cmd.arg(format!("-sOutputFile={}", output_path.to_string_lossy()))
         .arg(input_path);
 
     let output = output_with_timeout(cmd, process_timeout, "ghostscript").await?;
@@ -271,6 +274,12 @@ async fn output_with_timeout(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
+
+    // Each gs/qpdf process can use a full CPU and hundreds of MB, so cap how many run at once.
+    let _permit = PROCESS_SLOTS
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let child = cmd
         .spawn()
         .map_err(|e| AppError::Internal(format!("Failed to start {what}: {e}")))?;

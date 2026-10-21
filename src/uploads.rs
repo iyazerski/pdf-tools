@@ -12,6 +12,8 @@ pub(crate) struct Upload {
     pub(crate) dir: TempDir,
     pub(crate) pdf_path: PathBuf,
     pub(crate) pages: usize,
+    /// Set once all page thumbnails have been rendered into `dir/thumbs`.
+    pub(crate) thumbs: tokio::sync::OnceCell<()>,
 }
 
 struct UploadEntry {
@@ -65,6 +67,7 @@ impl UploadStore {
                 dir,
                 pdf_path,
                 pages,
+                thumbs: tokio::sync::OnceCell::new(),
             }),
             last_access: Instant::now(),
         };
