@@ -8,7 +8,7 @@ use crate::config::CookieSecureMode;
 use crate::constants::SESSION_COOKIE_NAME;
 use crate::constants::UPLOAD_CACHE_MAX_ENTRIES;
 use crate::error::AppError;
-use crate::session::SessionSigner;
+use crate::session::{Credentials, SessionSigner};
 use crate::uploads::UploadStore;
 
 pub(crate) struct AppStateArgs {
@@ -24,16 +24,11 @@ pub(crate) struct AppStateArgs {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) auth: Arc<AuthConfig>,
+    pub(crate) credentials: Arc<Credentials>,
     pub(crate) signer: Arc<SessionSigner>,
     pub(crate) cookie: Arc<CookieConfig>,
     pub(crate) process_timeout: StdDuration,
     pub(crate) uploads: Arc<UploadStore>,
-}
-
-pub(crate) struct AuthConfig {
-    pub(crate) username: String,
-    pub(crate) password: String,
 }
 
 pub(crate) struct CookieConfig {
@@ -44,10 +39,11 @@ pub(crate) struct CookieConfig {
 impl AppState {
     pub(crate) fn new(args: AppStateArgs) -> Self {
         Self {
-            auth: Arc::new(AuthConfig {
-                username: args.username,
-                password: args.password,
-            }),
+            credentials: Arc::new(Credentials::new(
+                &args.username,
+                &args.password,
+                args.session_secret.clone(),
+            )),
             signer: Arc::new(SessionSigner::new(args.session_secret, args.session_ttl)),
             cookie: Arc::new(CookieConfig {
                 secure: args.cookie_secure,

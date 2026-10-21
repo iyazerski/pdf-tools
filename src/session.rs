@@ -6,6 +6,40 @@ use time::{Duration, OffsetDateTime};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Login credentials, kept as MACs so checks run in constant time.
+pub(crate) struct Credentials {
+    key: Vec<u8>,
+    username_tag: Vec<u8>,
+    password_tag: Vec<u8>,
+}
+
+impl Credentials {
+    pub(crate) fn new(username: &str, password: &str, key: Vec<u8>) -> Self {
+        Self {
+            username_tag: mac(&key, username).finalize().into_bytes().to_vec(),
+            password_tag: mac(&key, password).finalize().into_bytes().to_vec(),
+            key,
+        }
+    }
+
+    /// Check a login attempt without leaking, via timing, how much of it matched.
+    pub(crate) fn matches(&self, username: &str, password: &str) -> bool {
+        let username_ok = mac(&self.key, username)
+            .verify_slice(&self.username_tag)
+            .is_ok();
+        let password_ok = mac(&self.key, password)
+            .verify_slice(&self.password_tag)
+            .is_ok();
+        username_ok & password_ok
+    }
+}
+
+fn mac(key: &[u8], value: &str) -> HmacSha256 {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(value.as_bytes());
+    mac
+}
+
 #[derive(Clone)]
 pub(crate) struct SessionSigner {
     key: Vec<u8>,
@@ -66,5 +100,19 @@ impl SessionSigner {
             return None;
         }
         Some(payload)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Credentials;
+
+    #[test]
+    fn credentials_match_only_exact_username_and_password() {
+        let creds = Credentials::new("admin", "secret", b"key".to_vec());
+        assert!(creds.matches("admin", "secret"));
+        assert!(!creds.matches("admin", "secret2"));
+        assert!(!creds.matches("admin2", "secret"));
+        assert!(!creds.matches("", ""));
     }
 }

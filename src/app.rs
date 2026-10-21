@@ -15,7 +15,7 @@ use tower_http::trace::{
 };
 use tracing::Level;
 
-use crate::constants::{GLOBAL_RATE_LIMIT_BURST, GLOBAL_RATE_LIMIT_RPS, MAX_BODY_BYTES};
+use crate::constants::{LOGIN_RATE_LIMIT_BURST, LOGIN_RATE_LIMIT_PERIOD, MAX_BODY_BYTES};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -72,13 +72,15 @@ pub(crate) fn build_router(state: AppState) -> Router {
         trust_proxy_headers: state.cookie.trust_proxy_headers,
     };
 
-    let global_governor_config = GovernorConfigBuilder::default()
+    // Only login needs throttling (password guessing); limiting the API would break bursts of
+    // thumbnail requests. Note: the builder's `period` is the time to replenish one request.
+    let login_governor_config = GovernorConfigBuilder::default()
         .key_extractor(key_extractor)
-        .per_second(GLOBAL_RATE_LIMIT_RPS)
-        .burst_size(GLOBAL_RATE_LIMIT_BURST)
+        .period(LOGIN_RATE_LIMIT_PERIOD)
+        .burst_size(LOGIN_RATE_LIMIT_BURST)
         .finish()
         .expect("governor config must build");
-    let global_governor = GovernorLayer::new(global_governor_config);
+    let login_governor = GovernorLayer::new(login_governor_config);
 
     let health_routes = Router::new()
         .route("/healthz", get(handlers::health::healthz))
@@ -89,7 +91,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         );
 
-    let login_routes = Router::new().route("/login", post(handlers::auth::login));
+    let login_routes = Router::new()
+        .route("/login", post(handlers::auth::login))
+        .layer(login_governor);
     let auth_routes = Router::new()
         .merge(login_routes)
         .route("/logout", post(handlers::auth::logout));
@@ -115,7 +119,6 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .nest("/api", api_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-        .layer(global_governor)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
@@ -154,15 +157,11 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn healthz_is_not_rate_limited() {
-        let app = build_router(test_state(true));
-
-        let mut saw_429 = false;
-        for _ in 0..500 {
+    async fn first_429(app: &axum::Router, method: &str, uri: &str, attempts: usize) -> bool {
+        for _ in 0..attempts {
             let req = Request::builder()
-                .method("GET")
-                .uri("/healthz")
+                .method(method)
+                .uri(uri)
                 .header("x-forwarded-for", "1.2.3.4")
                 .body(Body::empty())
                 .expect("request must build");
@@ -172,66 +171,36 @@ mod tests {
                 .await
                 .expect("request must succeed");
             if res.status() == StatusCode::TOO_MANY_REQUESTS {
-                saw_429 = true;
-                break;
+                return true;
             }
         }
+        false
+    }
+
+    #[tokio::test]
+    async fn healthz_is_not_rate_limited() {
+        let app = build_router(test_state(true));
         assert!(
-            !saw_429,
+            !first_429(&app, "GET", "/healthz", 500).await,
             "expected /healthz to never be rate limited (it is used by liveness/readiness probes)"
         );
     }
 
     #[tokio::test]
-    async fn login_is_rate_limited_by_global_governor() {
+    async fn login_is_rate_limited() {
         let app = build_router(test_state(true));
-
-        let mut saw_429 = false;
-        for _ in 0..700 {
-            let req = Request::builder()
-                .method("POST")
-                .uri("/login")
-                .header("x-forwarded-for", "1.2.3.4")
-                .body(Body::empty())
-                .expect("request must build");
-            let res = app
-                .clone()
-                .oneshot(req)
-                .await
-                .expect("request must succeed");
-            if res.status() == StatusCode::TOO_MANY_REQUESTS {
-                saw_429 = true;
-                break;
-            }
-        }
-        assert!(saw_429, "expected /login to eventually be rate limited");
+        assert!(
+            first_429(&app, "POST", "/login", 20).await,
+            "expected /login to be rate limited"
+        );
     }
 
     #[tokio::test]
-    async fn api_is_rate_limited_by_global_governor() {
+    async fn api_is_not_rate_limited() {
         let app = build_router(test_state(true));
-
-        let mut saw_429 = false;
-        for _ in 0..700 {
-            let req = Request::builder()
-                .method("POST")
-                .uri("/api/npages")
-                .header("x-forwarded-for", "1.2.3.4")
-                .body(Body::empty())
-                .expect("request must build");
-            let res = app
-                .clone()
-                .oneshot(req)
-                .await
-                .expect("request must succeed");
-            if res.status() == StatusCode::TOO_MANY_REQUESTS {
-                saw_429 = true;
-                break;
-            }
-        }
         assert!(
-            saw_429,
-            "expected /api/npages to eventually be rate limited"
+            !first_429(&app, "GET", "/api/page/x/1", 500).await,
+            "expected /api to never be rate limited (thumbnails load in bursts)"
         );
     }
 }

@@ -23,9 +23,7 @@ pub(crate) async fn login(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Result<Response, AppError> {
-    let expected_username = state.auth.username.as_str();
-    let expected_password = state.auth.password.as_str();
-    if form.username != expected_username || form.password != expected_password {
+    if !state.credentials.matches(&form.username, &form.password) {
         return Ok((
             StatusCode::SEE_OTHER,
             [(
