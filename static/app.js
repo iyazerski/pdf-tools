@@ -1,6 +1,8 @@
 (() => {
   const MAX_FILES = 10;
   const MAX_FILE_BYTES = 30 * 1024 * 1024;
+  // Matches the server: at 100 pages are copied as-is, without lossy recompression.
+  const LOSSLESS_QUALITY = 100;
 
   const dropzone = document.getElementById("dropzone");
   const fileInput = document.getElementById("fileInput");
@@ -254,12 +256,36 @@
     return sum;
   }
 
+  // Approximate the bytes that end up in the output: a share of each doc by pages kept.
+  function usedInputBytes() {
+    const pagesUsed = new Map();
+    for (const n of nodes) {
+      const d = docs.get(n.docId);
+      if (!d) continue;
+      const add = n.type === "doc" ? (d.pages || 1) : n.type === "page" ? 1 : 0;
+      pagesUsed.set(n.docId, (pagesUsed.get(n.docId) || 0) + add);
+    }
+    let sum = 0;
+    for (const [docId, used] of pagesUsed) {
+      const d = docs.get(docId);
+      sum += d.pages ? d.size * Math.min(1, used / d.pages) : d.size;
+    }
+    return sum;
+  }
+
   function estimateOutputBytes() {
+    const used = usedInputBytes();
+    if (used === 0) return 0;
     const q = Number(quality.value);
+    if (q >= LOSSLESS_QUALITY) return Math.round(used);
     const t = (q - 10) / 90; // 0..1
     const factor = 0.18 + 0.88 * t; // conservative; output may be > input for already-compressed PDFs
-    const est = Math.round(totalInputBytes() * factor + 24 * 1024);
-    return Math.max(0, est);
+    return Math.round(used * factor + 24 * 1024);
+  }
+
+  function renderQualityLabel() {
+    const q = Number(quality.value);
+    qualityValue.textContent = q >= LOSSLESS_QUALITY ? "Original" : `${q}%`;
   }
 
   function docsUsedByNodes() {
@@ -542,11 +568,13 @@
       if (!Number.isFinite(pages) || pages <= 0) throw new Error("Invalid pages response");
       if (!uploadId) throw new Error("Invalid upload id response");
       const cur = docs.get(docId);
-      if (cur) {
-        cur.pages = pages;
-        cur.uploadId = uploadId;
-        docs.set(docId, cur);
+      if (!cur) {
+        // The doc was removed while uploading; free the server copy right away.
+        void deleteUpload(uploadId);
+        return;
       }
+      cur.pages = pages;
+      cur.uploadId = uploadId;
       renderList();
     } catch (err) {
       showToast(err && err.message ? err.message : "Failed to read pages.");
@@ -571,18 +599,18 @@
       return;
     }
 
-    const slice = accepted.slice(0, space);
+    const sized = accepted.filter((f) => f.size <= MAX_FILE_BYTES);
+    if (sized.length !== accepted.length) {
+      showToast("Some files were skipped (max 30 MB per file).");
+    }
+    const slice = sized.slice(0, space);
     for (const f of slice) {
-      if (f.size > MAX_FILE_BYTES) {
-        showToast(`Skipped ${f.name} (max 30 MB per file).`);
-        continue;
-      }
       const docId = uid();
       docs.set(docId, { id: docId, file: f, name: f.name, size: f.size, pages: null, uploadId: null });
       nodes.push({ id: `d_${docId}`, type: "doc", docId });
       fetchNpages(docId);
     }
-    if (slice.length < accepted.length) {
+    if (slice.length < sized.length) {
       showToast(`Only the first ${slice.length} files were added (max ${MAX_FILES}).`);
     }
     renderList();
@@ -609,7 +637,7 @@
   });
 
   quality.addEventListener("input", () => {
-    qualityValue.textContent = quality.value;
+    renderQualityLabel();
     setUiState();
   });
 
@@ -675,15 +703,16 @@
   }
 
   function buildLayout() {
-    /** @type {{doc: string, page: number}[]} */
+    /** @type {{upload: string, page: number}[]} */
     const layout = [];
     for (const n of nodes) {
       const d = docs.get(n.docId);
       if (!d || d.pages == null) continue;
+      if (!d.uploadId) throw new Error("Some files are not uploaded yet.");
       if (n.type === "doc") {
-        for (let p = 1; p <= d.pages; p += 1) layout.push({ doc: n.docId, page: p });
+        for (let p = 1; p <= d.pages; p += 1) layout.push({ upload: d.uploadId, page: p });
       } else if (n.type === "page") {
-        layout.push({ doc: n.docId, page: n.page });
+        layout.push({ upload: d.uploadId, page: n.page });
       }
     }
     return layout;
@@ -699,7 +728,13 @@
       showToast("Pages are still being calculated…");
       return;
     }
-    const layout = buildLayout();
+    let layout;
+    try {
+      layout = buildLayout();
+    } catch (err) {
+      showToast(err.message);
+      return;
+    }
     if (layout.length === 0) {
       showToast("Nothing to merge.");
       return;
@@ -710,19 +745,10 @@
     const prev = mergeBtn.textContent;
     mergeBtn.textContent = "Downloading…";
     try {
-      const usedDocs = new Set(layout.map((x) => x.doc));
-      const uploads = {};
-      for (const docId of usedDocs) {
-        const d = docs.get(docId);
-        if (!d || !d.uploadId) throw new Error("Some files are not uploaded yet.");
-        uploads[docId] = d.uploadId;
-      }
-
       const payload = {
         quality: Number(quality.value),
         linearize: Boolean(linearize && linearize.checked),
         layout,
-        uploads,
       };
 
       const res = await fetch("/api/merge", {
@@ -747,7 +773,8 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      // Revoking synchronously can cancel the download in Firefox and Safari.
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       showToast("Downloaded.");
     } catch (err) {
       showToast(err && err.message ? err.message : "Merge failed.");
@@ -758,6 +785,7 @@
   }
 
   mergeBtn.addEventListener("click", doMerge);
+  renderQualityLabel();
   renderList();
 
   // Gate upload interactions last so earlier listeners remain simple.

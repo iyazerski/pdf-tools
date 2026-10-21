@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,6 +24,7 @@ use crate::constants::{MAX_FILE_BYTES, MAX_PDFS};
 use crate::error::AppError;
 use crate::pdf::MergePageRef;
 use crate::state::AppState;
+use crate::uploads::Upload;
 
 const STREAM_BUF_BYTES: usize = 64 * 1024;
 
@@ -271,12 +272,14 @@ pub(crate) struct MergeRequest {
     #[serde(default)]
     pub(crate) linearize: bool,
     pub(crate) layout: Vec<MergePageRef>,
-    pub(crate) uploads: HashMap<String, String>,
 }
 
 fn default_merge_quality() -> u8 {
     80
 }
+
+/// Quality at which pages are copied as-is, skipping the slow lossy Ghostscript pass.
+const LOSSLESS_QUALITY: u8 = 100;
 
 pub(crate) async fn merge(
     State(state): State<AppState>,
@@ -294,87 +297,69 @@ pub(crate) async fn merge(
         return Err(AppError::BadRequest("Layout is empty".to_string()));
     }
 
-    if req.uploads.is_empty() {
-        return Err(AppError::BadRequest("No uploads provided".to_string()));
-    }
-
     if !(10..=100).contains(&req.quality) {
         return Err(AppError::BadRequest(
             "Quality must be between 10 and 100".to_string(),
         ));
     }
 
-    let mut used_docs: HashSet<&str> = HashSet::new();
+    // Hold every upload for the whole merge, so the sweeper can't delete inputs mid-way.
+    let mut uploads: HashMap<&str, Arc<Upload>> = HashMap::new();
     for r in &req.layout {
-        used_docs.insert(r.doc.as_str());
-    }
-    if used_docs.len() > MAX_PDFS {
-        return Err(AppError::BadRequest(format!(
-            "Too many PDFs (max {MAX_PDFS})"
-        )));
-    }
-
-    let mut uploads_by_doc: HashMap<String, Arc<crate::uploads::Upload>> =
-        HashMap::with_capacity(used_docs.len());
-    for doc in used_docs {
-        let upload_id = req
-            .uploads
-            .get(doc)
-            .ok_or_else(|| AppError::BadRequest(format!("Missing upload id for doc: {doc}")))?;
-        let Some(upload) = state.uploads.get(upload_id) else {
-            return Err(AppError::BadRequest(format!(
-                "Unknown or expired upload id for doc: {doc}"
-            )));
-        };
-        uploads_by_doc.insert(doc.to_string(), upload);
-    }
-
-    for r in &req.layout {
-        let Some(upload) = uploads_by_doc.get(&r.doc) else {
-            return Err(AppError::BadRequest(format!(
-                "Layout references unknown doc id: {}",
-                r.doc
-            )));
+        let upload = match uploads.get(r.upload.as_str()) {
+            Some(upload) => upload,
+            None => {
+                if uploads.len() == MAX_PDFS {
+                    return Err(AppError::BadRequest(format!(
+                        "Too many PDFs (max {MAX_PDFS})"
+                    )));
+                }
+                let Some(upload) = state.uploads.get(&r.upload) else {
+                    return Err(AppError::BadRequest(
+                        "Unknown or expired upload, please re-add the file".to_string(),
+                    ));
+                };
+                uploads.entry(r.upload.as_str()).or_insert(upload)
+            }
         };
         if r.page == 0 || r.page > upload.pages {
             return Err(AppError::BadRequest(format!(
-                "Invalid page {} for doc {} (max {})",
-                r.page, r.doc, upload.pages
+                "Invalid page {} (max {})",
+                r.page, upload.pages
             )));
         }
     }
 
-    let inputs_by_id: HashMap<String, PathBuf> = uploads_by_doc
+    let inputs: HashMap<&str, &Path> = uploads
         .iter()
-        .map(|(doc, upload)| (doc.clone(), upload.pdf_path.clone()))
+        .map(|(id, upload)| (*id, upload.pdf_path.as_path()))
         .collect();
 
     let tmp = Arc::new(TempDir::new().map_err(internal)?);
-    let assembled = crate::pdf::qpdf_assemble_pages_with_timeout(
+    let mut output_path = crate::pdf::qpdf_assemble_pages_with_timeout(
         tmp.as_ref(),
-        &inputs_by_id,
+        &inputs,
         &req.layout,
         state.process_timeout,
     )
     .await?;
-    let merged_path = crate::pdf::merge_with_ghostscript_to_file_with_timeout(
-        tmp.as_ref(),
-        &[assembled],
-        req.quality,
-        state.process_timeout,
-    )
-    .await?;
-
-    let output_path = if req.linearize {
-        crate::pdf::qpdf_linearize_file_with_timeout(
+    if req.quality < LOSSLESS_QUALITY {
+        output_path = crate::pdf::merge_with_ghostscript_to_file_with_timeout(
             tmp.as_ref(),
-            &merged_path,
+            &[output_path],
+            req.quality,
             state.process_timeout,
         )
-        .await?
-    } else {
-        merged_path
-    };
+        .await?;
+    }
+    if req.linearize {
+        output_path = crate::pdf::qpdf_linearize_file_with_timeout(
+            tmp.as_ref(),
+            &output_path,
+            state.process_timeout,
+        )
+        .await?;
+    }
 
     stream_file_response(&output_path, tmp, |headers| {
         headers.insert(

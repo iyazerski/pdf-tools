@@ -14,7 +14,7 @@ static PROCESS_SLOTS: Semaphore = Semaphore::const_new(2);
 
 #[derive(serde::Deserialize)]
 pub(crate) struct MergePageRef {
-    pub(crate) doc: String,
+    pub(crate) upload: String,
     pub(crate) page: usize,
 }
 
@@ -49,7 +49,7 @@ pub(crate) async fn qpdf_show_npages_with_timeout(
 
 pub(crate) async fn qpdf_assemble_pages_with_timeout(
     tmp: &TempDir,
-    inputs_by_id: &std::collections::HashMap<String, PathBuf>,
+    inputs: &std::collections::HashMap<&str, &Path>,
     layout: &[MergePageRef],
     process_timeout: Duration,
 ) -> Result<PathBuf, AppError> {
@@ -62,9 +62,9 @@ pub(crate) async fn qpdf_assemble_pages_with_timeout(
     let mut cmd = Command::new("qpdf");
     cmd.arg("--empty").arg("--pages");
     for run in runs {
-        let path = inputs_by_id
-            .get(&run.doc)
-            .ok_or_else(|| AppError::BadRequest(format!("Unknown doc id: {}", run.doc)))?;
+        let path = inputs
+            .get(run.upload)
+            .ok_or_else(|| AppError::BadRequest(format!("Unknown upload id: {}", run.upload)))?;
         cmd.arg(path).arg(run.spec());
     }
     cmd.arg("--").arg(&output_path);
@@ -79,13 +79,13 @@ pub(crate) async fn qpdf_assemble_pages_with_timeout(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LayoutRun {
-    doc: String,
+struct LayoutRun<'a> {
+    upload: &'a str,
     start: usize,
     end: usize,
 }
 
-impl LayoutRun {
+impl LayoutRun<'_> {
     fn spec(&self) -> String {
         if self.start == self.end {
             self.start.to_string()
@@ -95,18 +95,18 @@ impl LayoutRun {
     }
 }
 
-fn compress_layout_runs(layout: &[MergePageRef]) -> Vec<LayoutRun> {
+fn compress_layout_runs(layout: &[MergePageRef]) -> Vec<LayoutRun<'_>> {
     let mut runs: Vec<LayoutRun> = Vec::new();
     for r in layout {
         if let Some(last) = runs.last_mut() {
-            if last.doc == r.doc && r.page == last.end.saturating_add(1) {
+            if last.upload == r.upload && r.page == last.end.saturating_add(1) {
                 last.end = r.page;
                 continue;
             }
         }
 
         runs.push(LayoutRun {
-            doc: r.doc.clone(),
+            upload: &r.upload,
             start: r.page,
             end: r.page,
         });
@@ -274,38 +274,38 @@ mod tests {
     fn compress_layout_runs_makes_ranges_for_consecutive_pages() {
         let layout = vec![
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 1,
             },
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 2,
             },
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 3,
             },
             MergePageRef {
-                doc: "b".to_string(),
+                upload: "b".to_string(),
                 page: 10,
             },
             MergePageRef {
-                doc: "b".to_string(),
+                upload: "b".to_string(),
                 page: 11,
             },
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 4,
             },
         ];
 
         let runs = compress_layout_runs(&layout);
         assert_eq!(runs.len(), 3);
-        assert_eq!(runs[0].doc, "a");
+        assert_eq!(runs[0].upload, "a");
         assert_eq!(runs[0].spec(), "1-3");
-        assert_eq!(runs[1].doc, "b");
+        assert_eq!(runs[1].upload, "b");
         assert_eq!(runs[1].spec(), "10-11");
-        assert_eq!(runs[2].doc, "a");
+        assert_eq!(runs[2].upload, "a");
         assert_eq!(runs[2].spec(), "4");
     }
 
@@ -313,11 +313,11 @@ mod tests {
     fn compress_layout_runs_does_not_merge_non_consecutive_pages() {
         let layout = vec![
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 1,
             },
             MergePageRef {
-                doc: "a".to_string(),
+                upload: "a".to_string(),
                 page: 3,
             },
         ];
