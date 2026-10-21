@@ -31,7 +31,7 @@ spec:
       kind: Rule
       middlewares:
         - name: security-headers
-        - name: buffering
+        - name: compress
       services:
         - name: pdf-tools
           port: 8091

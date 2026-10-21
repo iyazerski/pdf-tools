@@ -23,5 +23,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
 [dev-dependencies]
 tower = "0.5"

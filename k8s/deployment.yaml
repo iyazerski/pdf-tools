@@ -23,7 +23,7 @@ spec:
       containers:
         - name: pdf-tools
           image: __APP_IMAGE__
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8091
