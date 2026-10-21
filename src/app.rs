@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
@@ -73,17 +72,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
         trust_proxy_headers: state.cookie.trust_proxy_headers,
     };
 
-    let global_governor_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .key_extractor(key_extractor)
-            .per_second(GLOBAL_RATE_LIMIT_RPS)
-            .burst_size(GLOBAL_RATE_LIMIT_BURST)
-            .finish()
-            .expect("governor config must build"),
-    );
-    let global_governor = GovernorLayer {
-        config: global_governor_config.clone(),
-    };
+    let global_governor_config = GovernorConfigBuilder::default()
+        .key_extractor(key_extractor)
+        .per_second(GLOBAL_RATE_LIMIT_RPS)
+        .burst_size(GLOBAL_RATE_LIMIT_BURST)
+        .finish()
+        .expect("governor config must build");
+    let global_governor = GovernorLayer::new(global_governor_config);
 
     let health_routes = Router::new()
         .route("/healthz", get(handlers::health::healthz))
@@ -102,8 +97,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/merge", post(handlers::api::merge))
         .route("/npages", post(handlers::api::npages))
-        .route("/page/:upload_id/:page", get(handlers::api::page_png))
-        .route("/upload/:upload_id", delete(handlers::api::delete_upload));
+        .route("/page/{upload_id}/{page}", get(handlers::api::page_png))
+        .route("/upload/{upload_id}", delete(handlers::api::delete_upload));
 
     let app_routes = Router::new()
         .route("/", get(handlers::root::index))
