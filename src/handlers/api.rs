@@ -66,9 +66,9 @@ async fn write_validated_pdf_field_to_path(
     Ok(file_name)
 }
 
-async fn stream_file_response(
+async fn stream_file_response<K: Clone + Send + Sync + 'static>(
     path: &Path,
-    keep_alive: Arc<TempDir>,
+    keep_alive: K,
     apply_headers: impl FnOnce(&mut axum::http::HeaderMap) -> Result<(), AppError>,
 ) -> Result<Response, AppError> {
     let meta = fs::metadata(path).await.map_err(internal)?;
@@ -78,7 +78,7 @@ async fn stream_file_response(
     let body = Body::from_stream(ReaderStream::with_capacity(file, STREAM_BUF_BYTES));
 
     let mut res = Response::new(body);
-    // Keep TempDir alive for the duration of the response body stream.
+    // Keep the file's directory alive for the duration of the response body stream.
     res.extensions_mut().insert(keep_alive);
     *res.status_mut() = StatusCode::OK;
 
@@ -130,7 +130,7 @@ pub(crate) async fn npages(
     };
 
     let pages = crate::pdf::qpdf_show_npages_with_timeout(&path, state.process_timeout).await?;
-    let upload_id = state.uploads.put_pdf(tmp, path, pages).await;
+    let upload_id = state.uploads.put(tmp, path, pages);
     info!(
         pages,
         file = %file_name.unwrap_or_else(|| "file.pdf".to_string()),
@@ -152,7 +152,7 @@ pub(crate) async fn page_png(
 ) -> Result<Response, AppError> {
     let _username = state.require_auth(&cookies)?;
 
-    let Some(upload) = state.uploads.get(&upload_id).await else {
+    let Some(upload) = state.uploads.get(&upload_id) else {
         return Err(AppError::BadRequest("Unknown upload id".to_string()));
     };
 
@@ -174,7 +174,7 @@ pub(crate) async fn page_png(
         None => 40,
     };
 
-    let cache_dir = upload._dir_guard.path().join("render_cache");
+    let cache_dir = upload.dir.path().join("render_cache");
     fs::create_dir_all(&cache_dir).await.map_err(internal)?;
     let cache_path = cache_dir.join(format!("page_{page}_dpi_{dpi}.png"));
 
@@ -210,7 +210,7 @@ pub(crate) async fn page_png(
         Err(e) => return Err(internal(e)),
     };
 
-    stream_file_response(&png_path, upload._dir_guard.clone(), |headers| {
+    stream_file_response(&png_path, upload.clone(), |headers| {
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
         headers.insert(
             header::CACHE_CONTROL,
@@ -227,7 +227,7 @@ pub(crate) async fn delete_upload(
     AxumPath(upload_id): AxumPath<String>,
 ) -> Result<Response, AppError> {
     let _username = state.require_auth(&cookies)?;
-    let _ = state.uploads.remove(&upload_id).await;
+    state.uploads.remove(&upload_id);
     Ok((StatusCode::NO_CONTENT, "").into_response())
 }
 
@@ -281,14 +281,14 @@ pub(crate) async fn merge(
         )));
     }
 
-    let mut uploads_by_doc: HashMap<String, crate::uploads::UploadHandle> =
+    let mut uploads_by_doc: HashMap<String, Arc<crate::uploads::Upload>> =
         HashMap::with_capacity(used_docs.len());
     for doc in used_docs {
         let upload_id = req
             .uploads
             .get(doc)
             .ok_or_else(|| AppError::BadRequest(format!("Missing upload id for doc: {doc}")))?;
-        let Some(upload) = state.uploads.get(upload_id).await else {
+        let Some(upload) = state.uploads.get(upload_id) else {
             return Err(AppError::BadRequest(format!(
                 "Unknown or expired upload id for doc: {doc}"
             )));

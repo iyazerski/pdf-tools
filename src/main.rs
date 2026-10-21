@@ -38,6 +38,7 @@ async fn main() {
         trust_proxy_headers: config.trust_proxy_headers,
     });
 
+    state.uploads.clone().spawn_sweeper();
     let app = app::build_router(state);
 
     info!(bind = %config.bind, "starting server");
