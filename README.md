@@ -61,12 +61,17 @@ Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
 
 ## Kubernetes + GitHub Actions
 
-Manifests are in `k8s/`. The GitHub Actions workflow `.github/workflows/deploy.yaml`:
+Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (pre-commit and
+`cargo test`). When CI passes, `.github/workflows/cd.yaml` deploys that commit:
 
-- builds & pushes an image to GHCR
+- builds & pushes `ghcr.io/<owner>/pdf-tools:app-<sha>` (and `app-latest`) to GHCR
 - creates/updates `pdf-tools-secrets` in the target namespace
 - applies a cert-manager `ClusterIssuer` for Let's Encrypt (required secret: `LETSENCRYPT_EMAIL`)
-- applies the manifests and waits for rollout
+- applies the manifests, waits for rollout, and smoke-checks the public site
+- restores the previous release when the rollout or smoke check fails
+
+To redeploy manually, run the CD workflow and type `deploy` to confirm. The public host defaults to
+`pdftools.iyazerski.dev` and can be changed with the `PUBLIC_HOST` repository variable.
 
 ### HTTPS (Ingress + Let's Encrypt)
 
@@ -75,7 +80,7 @@ This repo assumes the cluster already has:
 - Traefik installed (default for k3s) exposed on ports 80/443 with entryPoints `web` and `websecure`
 - cert-manager installed (to provision TLS certs via Let's Encrypt)
 
-The app is exposed on `pdftools.iyazerski.dev` via:
+The app is exposed on `PUBLIC_HOST` via:
 
 - `k8s/traefik.yaml` (middlewares + ServersTransport)
 - `k8s/certificate.yaml` (cert-manager Certificate)

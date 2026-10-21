@@ -1,0 +1,167 @@
+name: CD
+run-name: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.display_title || 'Manual CD' }}
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      confirm_deployment:
+        description: 'Type "deploy" to confirm deployment'
+        required: true
+        default: ""
+
+concurrency:
+  group: pdf-tools-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm_deployment == 'deploy' || github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      app_image: ${{ steps.image-refs.outputs.app_image }}
+    env:
+      IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve image references
+        id: image-refs
+        run: |
+          echo "app_image=ghcr.io/${{ github.repository }}:app-${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ steps.image-refs.outputs.app_image }}
+            ghcr.io/${{ github.repository }}:app-latest
+
+  deploy:
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      APP_IMAGE: ${{ needs.build.outputs.app_image }}
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+      APP_USERNAME: ${{ secrets.APP_USERNAME }}
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+      LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+      NAMESPACE: ${{ secrets.KUBE_NAMESPACE }}
+      PACKAGES_PAT: ${{ secrets.PACKAGES_PAT }}
+      PUBLIC_HOST: ${{ vars.PUBLIC_HOST || secrets.PUBLIC_HOST || 'pdftools.iyazerski.dev' }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: v1.37.1
+
+      - name: Configure deployment defaults
+        run: |
+          echo "NAMESPACE=${NAMESPACE:-default}" >> "$GITHUB_ENV"
+
+      - name: Validate required settings
+        run: |
+          for key in APP_PASSWORD APP_USERNAME LETSENCRYPT_EMAIL PACKAGES_PAT SESSION_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "${key} is required." >&2
+              exit 1
+            fi
+          done
+          if [ -z "${KUBE_CONFIG}" ] && [ -z "${KUBE_CONFIG_B64}" ]; then
+            echo "KUBE_CONFIG or KUBE_CONFIG_B64 is required." >&2
+            exit 1
+          fi
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          if [ -n "${KUBE_CONFIG}" ]; then
+            echo "${KUBE_CONFIG}" > ~/.kube/config
+          else
+            echo "${KUBE_CONFIG_B64}" | base64 -d > ~/.kube/config
+          fi
+          chmod 600 ~/.kube/config
+
+      - name: Ensure namespace exists
+        run: |
+          kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
+
+      - name: Create GHCR image pull secret
+        run: |
+          if [ -z "${GHCR_USERNAME}" ]; then
+            GHCR_USERNAME="${{ github.repository_owner }}"
+          fi
+          kubectl -n "${NAMESPACE}" create secret docker-registry ghcr-pull-secret \
+            --docker-server=ghcr.io \
+            --docker-username="${GHCR_USERNAME}" \
+            --docker-password="${PACKAGES_PAT}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply app secrets
+        run: |
+          kubectl -n "${NAMESPACE}" create secret generic pdf-tools-secrets \
+            --from-literal=APP_USERNAME="${APP_USERNAME}" \
+            --from-literal=APP_PASSWORD="${APP_PASSWORD}" \
+            --from-literal=SESSION_SECRET="${SESSION_SECRET}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply cert-manager ClusterIssuer
+        run: |
+          sed -e "s|__LETSENCRYPT_EMAIL__|${LETSENCRYPT_EMAIL}|g" k8s/clusterissuer-letsencrypt-prod.yaml | kubectl apply -f -
+
+      - name: Record running release
+        # Remember the live revisions, so a failed deploy or smoke check can restore them.
+        run: scripts/release_guard.sh record deployment/pdf-tools
+
+      - name: Deploy application
+        run: |
+          sed -e "s|__APP_IMAGE__|${APP_IMAGE}|g" k8s/deployment.yaml | kubectl -n "${NAMESPACE}" apply -f -
+          kubectl -n "${NAMESPACE}" apply -f k8s/service.yaml
+          kubectl -n "${NAMESPACE}" apply -f k8s/traefik.yaml
+          sed -e "s|__PUBLIC_HOST__|${PUBLIC_HOST}|g" k8s/certificate.yaml | kubectl -n "${NAMESPACE}" apply -f -
+          sed -e "s|__PUBLIC_HOST__|${PUBLIC_HOST}|g" k8s/ingressroute.yaml | kubectl -n "${NAMESPACE}" apply -f -
+          kubectl -n "${NAMESPACE}" rollout status deployment/pdf-tools --timeout=300s
+
+      - name: Smoke check public site
+        run: |
+          scripts/release_guard.sh smoke \
+            200 "https://${PUBLIC_HOST}/" \
+            200 "https://${PUBLIC_HOST}/healthz"
+
+      - name: Restore previous release
+        if: failure()
+        run: scripts/release_guard.sh restore

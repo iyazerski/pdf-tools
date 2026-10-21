@@ -8,7 +8,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`pdftools.iyazerski.dev`)
+    - match: Host(`__PUBLIC_HOST__`)
       kind: Rule
       middlewares:
         - name: https-redirect
@@ -27,7 +27,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`pdftools.iyazerski.dev`)
+    - match: Host(`__PUBLIC_HOST__`)
       kind: Rule
       middlewares:
         - name: security-headers

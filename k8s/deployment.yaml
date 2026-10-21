@@ -22,7 +22,7 @@ spec:
         - name: ghcr-pull-secret
       containers:
         - name: pdf-tools
-          image: ghcr.io/OWNER/REPO:latest
+          image: __APP_IMAGE__
           imagePullPolicy: Always
           ports:
             - name: http
