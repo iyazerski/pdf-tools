@@ -111,6 +111,10 @@ jobs:
           fi
           sed -e "s|__LETSENCRYPT_EMAIL__|${LETSENCRYPT_EMAIL}|g" k8s/clusterissuer-letsencrypt-prod.yaml | kubectl apply -f -
 
+      - name: Record running release
+        # Remember the live revisions, so a failed deploy or smoke check can restore them.
+        run: scripts/release_guard.sh record deployment/pdf-tools
+
       - name: Deploy manifests
         run: |
           sed -e "s|ghcr.io/OWNER/REPO:latest|${IMAGE}|g" k8s/deployment.yaml | kubectl -n "${NAMESPACE}" apply -f -
@@ -122,3 +126,13 @@ jobs:
       - name: Wait rollout
         run: |
           kubectl -n "${NAMESPACE}" rollout status deployment/pdf-tools --timeout=180s
+
+      - name: Smoke check public site
+        run: |
+          scripts/release_guard.sh smoke \
+            200 "https://pdftools.iyazerski.dev/" \
+            200 "https://pdftools.iyazerski.dev/healthz"
+
+      - name: Restore previous release
+        if: failure()
+        run: scripts/release_guard.sh restore
