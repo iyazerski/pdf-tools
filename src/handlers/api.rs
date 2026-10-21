@@ -15,13 +15,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
 use tokio::fs;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
 use tower_cookies::Cookies;
 use tracing::{error, info};
 
 use crate::constants::{MAX_FILE_BYTES, MAX_PDFS};
 use crate::error::AppError;
-use crate::pdf::{looks_like_pdf, write_multipart_field_to_file, MergePageRef};
+use crate::pdf::MergePageRef;
 use crate::state::AppState;
 
 const STREAM_BUF_BYTES: usize = 64 * 1024;
@@ -34,6 +35,10 @@ fn bad_request<E: std::fmt::Display>(e: E) -> AppError {
     AppError::BadRequest(e.to_string())
 }
 
+const UPLOAD_BUF_BYTES: usize = 256 * 1024;
+const PDF_MAGIC: &[u8] = b"%PDF-";
+
+/// Stream a multipart PDF field to `path`, enforcing type, size and the PDF header.
 async fn write_validated_pdf_field_to_path(
     field: &mut Field<'_>,
     path: &Path,
@@ -50,18 +55,36 @@ async fn write_validated_pdf_field_to_path(
         )));
     }
 
-    let written = write_multipart_field_to_file(field, path).await?;
-    if written > MAX_FILE_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "{file_name} is too large (max {} MB)",
-            MAX_FILE_BYTES / 1024 / 1024
-        )));
+    // Buffer writes: multipart chunks are small and each tokio::fs write is a blocking-pool hop.
+    let mut out = BufWriter::with_capacity(
+        UPLOAD_BUF_BYTES,
+        fs::File::create(path).await.map_err(internal)?,
+    );
+    let mut header: Vec<u8> = Vec::with_capacity(PDF_MAGIC.len());
+    let mut written: usize = 0;
+    while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
+        written = written.saturating_add(chunk.len());
+        if written > MAX_FILE_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{file_name} is too large (max {} MB)",
+                MAX_FILE_BYTES / 1024 / 1024
+            )));
+        }
+        if header.len() < PDF_MAGIC.len() {
+            let take = (PDF_MAGIC.len() - header.len()).min(chunk.len());
+            header.extend_from_slice(&chunk[..take]);
+            if !PDF_MAGIC.starts_with(&header) {
+                break;
+            }
+        }
+        out.write_all(&chunk).await.map_err(internal)?;
     }
-    if !looks_like_pdf(path).await? {
+    if header != PDF_MAGIC {
         return Err(AppError::BadRequest(format!(
             "{file_name} does not look like a PDF"
         )));
     }
+    out.flush().await.map_err(internal)?;
 
     Ok(file_name)
 }

@@ -3,14 +3,11 @@ use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::multipart::Field;
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
-use crate::constants::MAX_FILE_BYTES;
 use crate::error::AppError;
 
 static PROCESS_SLOTS: Semaphore = Semaphore::const_new(2);
@@ -19,46 +16,6 @@ static PROCESS_SLOTS: Semaphore = Semaphore::const_new(2);
 pub(crate) struct MergePageRef {
     pub(crate) doc: String,
     pub(crate) page: usize,
-}
-
-pub(crate) async fn write_multipart_field_to_file(
-    field: &mut Field<'_>,
-    path: &Path,
-) -> Result<usize, AppError> {
-    let mut out = tokio::fs::File::create(path)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let mut written: usize = 0;
-    while let Some(chunk) = field
-        .chunk()
-        .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
-    {
-        written = written.saturating_add(chunk.len());
-        if written > MAX_FILE_BYTES {
-            return Ok(written);
-        }
-        out.write_all(&chunk)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    }
-    out.flush()
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(written)
-}
-
-pub(crate) async fn looks_like_pdf(path: &Path) -> Result<bool, AppError> {
-    let mut f = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let mut buf = [0u8; 5];
-    let n = f
-        .read(&mut buf)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(n == 5 && &buf == b"%PDF-")
 }
 
 pub(crate) async fn qpdf_show_npages_with_timeout(
