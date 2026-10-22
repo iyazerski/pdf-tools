@@ -43,12 +43,12 @@ cargo run
 
 ## Development
 
-### pre-commit
+### prek
 
-Install `pre-commit` (e.g. `brew install pre-commit` or `pip install pre-commit`) and enable hooks:
+Install [prek](https://prek.j178.dev) (e.g. `brew install prek`) and enable hooks:
 
 ```bash
-pre-commit install
+prek install
 ```
 
 Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
@@ -67,7 +67,7 @@ Static assets and the page template are compiled into the binary, so changes nee
 
 ## Kubernetes + GitHub Actions
 
-Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (pre-commit and
+Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (prek and
 `cargo test`). When CI passes, `.github/workflows/cd.yaml` deploys that commit:
 
 - builds & pushes `ghcr.io/<owner>/pdf-tools:app-<sha>` (and `app-latest`) to GHCR
