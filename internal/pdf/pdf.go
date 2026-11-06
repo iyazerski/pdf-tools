@@ -100,21 +100,25 @@ func (p *Processor) Merge(ctx context.Context, dir string, inputs map[string]Inp
 			out = parts[0]
 		default:
 			out = filepath.Join(dir, "merged.pdf")
-			conf := newConfig()
-			// Without this, pdfcpu adds an outline entry named after each part file.
-			conf.CreateBookmarks = false
-			err = api.MergeCreateFile(ctx, parts, out, false, conf)
+			err = mergeFiles(ctx, parts, out)
 		}
 		return err
 	})
 	return out, err
 }
 
-// collectParts returns one PDF per segment of layout, in order. Whole documents are used as
-// they are, and the other segments are copied to new files in dir.
+// collectParts returns PDFs in dir that hold the pages of layout when concatenated in order.
+// Whole documents are used as they are.
 func collectParts(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) ([]string, error) {
+	segs := segments(layout)
+	if uploadRepeats(segs) {
+		part, err := collectInterleaved(ctx, dir, inputs, layout)
+		return []string{part}, err
+	}
+
+	// Every upload is read once, so copy each segment to its own file.
 	var parts []string
-	for i, seg := range segments(layout) {
+	for i, seg := range segs {
 		in, ok := inputs[seg.upload]
 		if !ok {
 			return nil, fmt.Errorf("unknown upload %q", seg.upload)
@@ -130,6 +134,52 @@ func collectParts(ctx context.Context, dir string, inputs map[string]Input, layo
 		parts = append(parts, part)
 	}
 	return parts, nil
+}
+
+// collectInterleaved copies the pages of layout to one new PDF in dir.
+//
+// Copying each segment on its own would parse an upload once per segment, so layouts that
+// alternate between uploads would cost one full parse per switch. Instead, it joins the
+// uploads once and copies all pages from the joined file in a single pass.
+func collectInterleaved(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) (string, error) {
+	var paths []string
+	// offsets maps each upload to the number of joined pages before its first page.
+	offsets := make(map[string]int)
+	total := 0
+	for _, ref := range layout {
+		if _, ok := offsets[ref.Upload]; ok {
+			continue
+		}
+		in, ok := inputs[ref.Upload]
+		if !ok {
+			return "", fmt.Errorf("unknown upload %q", ref.Upload)
+		}
+		offsets[ref.Upload] = total
+		total += in.Pages
+		paths = append(paths, in.Path)
+	}
+
+	joined := filepath.Join(dir, "joined.pdf")
+	if err := mergeFiles(ctx, paths, joined); err != nil {
+		return "", err
+	}
+	pages := make([]int, len(layout))
+	for i, ref := range layout {
+		pages[i] = offsets[ref.Upload] + ref.Page
+	}
+	out := filepath.Join(dir, "collected.pdf")
+	if err := api.CollectFile(ctx, joined, out, pageSelection(pages), newConfig()); err != nil {
+		return "", fmt.Errorf("collect pages: %w", err)
+	}
+	return out, nil
+}
+
+// mergeFiles concatenates the PDFs at paths into a new PDF at out.
+func mergeFiles(ctx context.Context, paths []string, out string) error {
+	conf := newConfig()
+	// Without this, pdfcpu adds an outline entry named after each input file.
+	conf.CreateBookmarks = false
+	return api.MergeCreateFile(ctx, paths, out, false, conf)
 }
 
 // newConfig returns the pdfcpu configuration for every job.
@@ -277,6 +327,18 @@ func pageSelection(pages []int) []string {
 		i = j + 1
 	}
 	return sel
+}
+
+// uploadRepeats reports whether an upload appears in more than one segment.
+func uploadRepeats(segs []segment) bool {
+	seen := make(map[string]bool, len(segs))
+	for _, seg := range segs {
+		if seen[seg.upload] {
+			return true
+		}
+		seen[seg.upload] = true
+	}
+	return false
 }
 
 func isWholeDocument(pages []int, total int) bool {

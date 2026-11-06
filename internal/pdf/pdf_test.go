@@ -77,6 +77,18 @@ func TestMerge(t *testing.T) {
 			wantWidths: []int{101, 102, 103, 210, 211, 104},
 		},
 		{
+			name:       "a whole document can repeat around another",
+			layout:     slices.Concat(refs("a", 1, 2, 3, 4), refs("b", 1), refs("a", 1, 2, 3, 4)),
+			quality:    LosslessQuality,
+			wantWidths: []int{101, 102, 103, 104, 201, 101, 102, 103, 104},
+		},
+		{
+			name:       "partial documents are copied without joining",
+			layout:     slices.Concat(refs("b", 11, 10), refs("a", 2)),
+			quality:    LosslessQuality,
+			wantWidths: []int{211, 210, 102},
+		},
+		{
 			name:       "lossy merge interleaves documents in layout order",
 			layout:     slices.Concat(refs("a", 1, 2, 3), refs("b", 10, 11), refs("a", 4)),
 			quality:    50,
