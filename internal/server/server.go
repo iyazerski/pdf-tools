@@ -139,6 +139,12 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "Request body is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	if errors.Is(err, pdf.ErrBusy) {
+		slog.Warn("PDF jobs are saturated", "path", r.URL.Path, "error", err)
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "The server is busy, please try again shortly", http.StatusServiceUnavailable)
+		return
+	}
 	switch {
 	case r.Context().Err() != nil:
 		// The client is gone, so nobody reads the response.

@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
@@ -106,7 +108,7 @@ func pageWidths(t *testing.T, path string) []int {
 
 func TestPageCount(t *testing.T) {
 	dir := t.TempDir()
-	p := NewProcessor(time.Minute)
+	p := NewProcessor(time.Minute, 2)
 
 	valid := filepath.Join(dir, "valid.pdf")
 	writePDF(t, valid, 101, 102, 103)
@@ -184,7 +186,7 @@ func TestMerge(t *testing.T) {
 			if _, err := exec.LookPath("gs"); err != nil && tt.quality < LosslessQuality {
 				t.Skip("lossy merges need Ghostscript (gs)")
 			}
-			out, err := NewProcessor(time.Minute).Merge(t.Context(), t.TempDir(), inputs, tt.layout, tt.quality)
+			out, err := NewProcessor(time.Minute, 2).Merge(t.Context(), t.TempDir(), inputs, tt.layout, tt.quality)
 			if err != nil {
 				t.Fatalf("Merge: %v", err)
 			}
@@ -212,7 +214,7 @@ func TestLowerQualityShrinksImages(t *testing.T) {
 
 	size := func(quality int) int64 {
 		t.Helper()
-		out, err := NewProcessor(time.Minute).Merge(t.Context(), t.TempDir(), inputs, layout, quality)
+		out, err := NewProcessor(time.Minute, 2).Merge(t.Context(), t.TempDir(), inputs, layout, quality)
 		if err != nil {
 			t.Fatalf("Merge(quality %d): %v", quality, err)
 		}
@@ -225,6 +227,27 @@ func TestLowerQualityShrinksImages(t *testing.T) {
 	if low, high := size(MinQuality), size(90); low*2 > high {
 		t.Errorf("output size at quality %d = %d, at 90 = %d; want under half", MinQuality, low, high)
 	}
+}
+
+func TestJobWaitingTooLongIsBusy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := NewProcessor(time.Minute, 1)
+		running, release := make(chan struct{}), make(chan struct{})
+		go func() {
+			_ = p.do(t.Context(), "first", func(context.Context) error {
+				close(running)
+				<-release
+				return nil
+			})
+		}()
+		<-running
+
+		err := p.do(t.Context(), "second", func(context.Context) error { return nil })
+		if !errors.Is(err, ErrBusy) {
+			t.Errorf("do while the only slot is taken = %v; want ErrBusy", err)
+		}
+		close(release)
+	})
 }
 
 func TestPrefixWriter(t *testing.T) {

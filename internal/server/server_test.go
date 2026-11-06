@@ -22,7 +22,7 @@ func newTestServer(t *testing.T) *Server {
 		CookieSecure:      CookieSecureNever,
 		TrustProxyHeaders: true,
 		Uploads:           uploads.NewStore(time.Minute, 10),
-		PDF:               pdf.NewProcessor(30 * time.Second),
+		PDF:               pdf.NewProcessor(30*time.Second, 2),
 		// The repo root holds the real templates/ and static/ directories.
 		Assets: os.DirFS("../.."),
 	})

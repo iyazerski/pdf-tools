@@ -17,6 +17,7 @@ type config struct {
 	sessionSecret     string
 	bindAddr          string
 	processTimeout    time.Duration
+	maxPDFJobs        int
 	uploadCacheTTL    time.Duration
 	cookieSecure      server.CookieSecureMode
 	trustProxyHeaders bool
@@ -37,6 +38,9 @@ func loadConfig() (config, error) {
 	}
 	cfg.bindAddr = cmp.Or(os.Getenv("BIND_ADDR"), "0.0.0.0:8091")
 	if cfg.processTimeout, err = envSeconds("EXTERNAL_PROCESS_TIMEOUT_SECS", 120); err != nil {
+		return cfg, err
+	}
+	if cfg.maxPDFJobs, err = envPositiveInt("MAX_PDF_JOBS", 2); err != nil {
 		return cfg, err
 	}
 	if cfg.uploadCacheTTL, err = envSeconds("UPLOAD_CACHE_TTL_SECS", 20*60); err != nil {
@@ -67,6 +71,18 @@ func envSeconds(key string, def int) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be a non-negative integer: %w", key, err)
 	}
 	return time.Duration(n) * time.Second, nil
+}
+
+func envPositiveInt(key string, def int) (int, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def, nil
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 16)
+	if err != nil || n == 0 {
+		return 0, fmt.Errorf("%s must be a positive integer (got %q)", key, v)
+	}
+	return int(n), nil
 }
 
 func cookieSecureMode(v string) (server.CookieSecureMode, error) {

@@ -64,7 +64,7 @@ func run() error {
 		CookieSecure:      cfg.cookieSecure,
 		TrustProxyHeaders: cfg.trustProxyHeaders,
 		Uploads:           store,
-		PDF:               pdf.NewProcessor(cfg.processTimeout),
+		PDF:               pdf.NewProcessor(cfg.processTimeout, cfg.maxPDFJobs),
 		Assets:            assetsFS,
 	})
 	if err != nil {

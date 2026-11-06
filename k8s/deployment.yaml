@@ -54,6 +54,9 @@ spec:
               value: auto
             - name: TRUST_PROXY_HEADERS
               value: "1"
+            # Each job can use a full CPU and hundreds of MB, and jobs share the limits below.
+            - name: MAX_PDF_JOBS
+              value: "2"
             # Soft Go heap target. Ghostscript runs outside the Go heap, so this stays well
             # below the 512Mi limit.
             - name: GOMEMLIMIT

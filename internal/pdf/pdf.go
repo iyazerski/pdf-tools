@@ -20,9 +20,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
-// maxConcurrentJobs caps parallel PDF jobs: each one can use a full CPU and hundreds of MB.
-const maxConcurrentJobs = 2
-
 // Merge quality bounds. LosslessQuality copies pages as they are, skipping the slow lossy
 // Ghostscript pass.
 const (
@@ -30,8 +27,12 @@ const (
 	LosslessQuality = 100
 )
 
-// ErrInvalidPDF reports an input that can't be read as a PDF.
-var ErrInvalidPDF = errors.New("invalid PDF")
+var (
+	// ErrInvalidPDF reports an input that can't be read as a PDF.
+	ErrInvalidPDF = errors.New("invalid PDF")
+	// ErrBusy reports a job that waited too long for a free slot.
+	ErrBusy = errors.New("too many PDF jobs")
+)
 
 // Processor runs PDF jobs with bounded concurrency and a per-job timeout.
 type Processor struct {
@@ -39,9 +40,10 @@ type Processor struct {
 	timeout time.Duration
 }
 
-// NewProcessor returns a Processor that stops each job after timeout.
-func NewProcessor(timeout time.Duration) *Processor {
-	return &Processor{slots: make(chan struct{}, maxConcurrentJobs), timeout: timeout}
+// NewProcessor returns a Processor that runs at most maxJobs jobs at once, and stops each
+// job after timeout. A job that waits longer than timeout for a slot fails with ErrBusy.
+func NewProcessor(timeout time.Duration, maxJobs int) *Processor {
+	return &Processor{slots: make(chan struct{}, maxJobs), timeout: timeout}
 }
 
 // PageRef selects one page (1-based) of an upload.
@@ -81,52 +83,53 @@ func (p *Processor) PageCount(ctx context.Context, path string) (int, error) {
 // LosslessQuality, Ghostscript downsamples images to match quality (MinQuality or more).
 // The result is written to dir, unless it would be identical to one whole input: then that
 // input's path is returned as-is.
+//
+// All steps run as one job, so a merge holds one slot and one timeout from start to end.
 func (p *Processor) Merge(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef, quality int) (string, error) {
-	parts, err := p.collectParts(ctx, dir, inputs, layout)
-	if err != nil {
-		return "", err
-	}
-	if quality < LosslessQuality {
-		// Ghostscript concatenates its inputs, so the parts need no merge pass of their own.
-		return p.compress(ctx, dir, parts, quality)
-	}
-	if len(parts) == 1 {
-		return parts[0], nil
-	}
-
-	out := filepath.Join(dir, "merged.pdf")
-	err = p.do(ctx, "merge", func(ctx context.Context) error {
-		conf := newConfig()
-		// Without this, pdfcpu adds an outline entry named after each part file.
-		conf.CreateBookmarks = false
-		return api.MergeCreateFile(ctx, parts, out, false, conf)
+	var out string
+	err := p.do(ctx, "merge", func(ctx context.Context) error {
+		parts, err := collectParts(ctx, dir, inputs, layout)
+		if err != nil {
+			return err
+		}
+		switch {
+		case quality < LosslessQuality:
+			// Ghostscript concatenates its inputs, so the parts need no merge pass of their own.
+			out, err = compress(ctx, dir, parts, quality)
+		case len(parts) == 1:
+			out = parts[0]
+		default:
+			out = filepath.Join(dir, "merged.pdf")
+			conf := newConfig()
+			// Without this, pdfcpu adds an outline entry named after each part file.
+			conf.CreateBookmarks = false
+			err = api.MergeCreateFile(ctx, parts, out, false, conf)
+		}
+		return err
 	})
 	return out, err
 }
 
 // collectParts returns one PDF per segment of layout, in order. Whole documents are used as
 // they are, and the other segments are copied to new files in dir.
-func (p *Processor) collectParts(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) ([]string, error) {
+func collectParts(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) ([]string, error) {
 	var parts []string
-	err := p.do(ctx, "collect pages", func(ctx context.Context) error {
-		for i, seg := range segments(layout) {
-			in, ok := inputs[seg.upload]
-			if !ok {
-				return fmt.Errorf("unknown upload %q", seg.upload)
-			}
-			if isWholeDocument(seg.pages, in.Pages) {
-				parts = append(parts, in.Path)
-				continue
-			}
-			part := filepath.Join(dir, fmt.Sprintf("part_%d.pdf", i))
-			if err := api.CollectFile(ctx, in.Path, part, pageSelection(seg.pages), newConfig()); err != nil {
-				return fmt.Errorf("pages of %q: %w", seg.upload, err)
-			}
-			parts = append(parts, part)
+	for i, seg := range segments(layout) {
+		in, ok := inputs[seg.upload]
+		if !ok {
+			return nil, fmt.Errorf("unknown upload %q", seg.upload)
 		}
-		return nil
-	})
-	return parts, err
+		if isWholeDocument(seg.pages, in.Pages) {
+			parts = append(parts, in.Path)
+			continue
+		}
+		part := filepath.Join(dir, fmt.Sprintf("part_%d.pdf", i))
+		if err := api.CollectFile(ctx, in.Path, part, pageSelection(seg.pages), newConfig()); err != nil {
+			return nil, fmt.Errorf("pages of %q: %w", seg.upload, err)
+		}
+		parts = append(parts, part)
+	}
+	return parts, nil
 }
 
 // newConfig returns the pdfcpu configuration for every job.
@@ -143,7 +146,7 @@ func newConfig() *model.Configuration {
 
 // compress concatenates the PDFs in inputs with Ghostscript, downsampling and re-encoding
 // images to match quality, and returns the new file's path in dir.
-func (p *Processor) compress(ctx context.Context, dir string, inputs []string, quality int) (string, error) {
+func compress(ctx context.Context, dir string, inputs []string, quality int) (string, error) {
 	out := filepath.Join(dir, "compressed.pdf")
 	dpi, qFactor := qualityToGhostscriptParams(quality)
 	// pdfwrite ignores -dJPEGQ, which only applies to the jpeg output devices. JPEG quality
@@ -172,7 +175,7 @@ func (p *Processor) compress(ctx context.Context, dir string, inputs []string, q
 		"-c", distillerParams,
 		"-f",
 	}
-	return out, p.runGhostscript(ctx, append(args, inputs...)...)
+	return out, ghostscript(ctx, append(args, inputs...)...)
 }
 
 // RenderJPEG renders pages of the PDF at in to JPEG files at dpi.
@@ -193,28 +196,35 @@ func (p *Processor) RenderJPEG(ctx context.Context, in string, page, dpi int, ou
 		args = append(args, "-dFirstPage="+strconv.Itoa(page), "-dLastPage="+strconv.Itoa(page))
 	}
 	args = append(args, "-sOutputFile="+out, in)
-	return p.runGhostscript(ctx, args...)
+	return p.do(ctx, "render", func(ctx context.Context) error {
+		return ghostscript(ctx, args...)
+	})
 }
 
-func (p *Processor) runGhostscript(ctx context.Context, args ...string) error {
-	return p.do(ctx, "ghostscript", func(ctx context.Context) error {
-		args = append([]string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH"}, args...)
-		cmd := exec.CommandContext(ctx, "gs", args...)
-		stderr := &prefixWriter{max: maxStderrBytes}
-		cmd.Stderr = stderr
-		// Don't wait forever for output pipes after the process is killed.
-		cmd.WaitDelay = 5 * time.Second
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%w: %s", err, stderr)
-		}
-		return nil
-	})
+// ghostscript runs gs in batch mode with args.
+func ghostscript(ctx context.Context, args ...string) error {
+	args = append([]string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH"}, args...)
+	cmd := exec.CommandContext(ctx, "gs", args...)
+	stderr := &prefixWriter{max: maxStderrBytes}
+	cmd.Stderr = stderr
+	// Don't wait forever for output pipes after the process is killed.
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ghostscript: %w: %s", err, stderr)
+	}
+	return nil
 }
 
 // do runs job once a slot is free, with the processor's timeout.
 func (p *Processor) do(ctx context.Context, name string, job func(context.Context) error) error {
+	// Bound the wait too: under a steady overload, a queued job would otherwise hold its
+	// request, upload references, and temporary files for as long as the client waits.
+	wait := time.NewTimer(p.timeout)
+	defer wait.Stop()
 	select {
 	case p.slots <- struct{}{}:
+	case <-wait.C:
+		return fmt.Errorf("%s: %w", name, ErrBusy)
 	case <-ctx.Done():
 		return fmt.Errorf("%s: wait for a free slot: %w", name, ctx.Err())
 	}
