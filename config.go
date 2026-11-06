@@ -46,10 +46,12 @@ func loadConfig() (config, error) {
 	if cfg.uploadCacheTTL, err = envSeconds("UPLOAD_CACHE_TTL_SECS", 20*60); err != nil {
 		return cfg, err
 	}
-	if cfg.cookieSecure, err = cookieSecureMode(cmp.Or(os.Getenv("COOKIE_SECURE"), "auto")); err != nil {
+	if err = cfg.cookieSecure.UnmarshalText([]byte(cmp.Or(os.Getenv("COOKIE_SECURE"), "auto"))); err != nil {
+		return cfg, fmt.Errorf("COOKIE_SECURE: %w", err)
+	}
+	if cfg.trustProxyHeaders, err = envBool("TRUST_PROXY_HEADERS", false); err != nil {
 		return cfg, err
 	}
-	cfg.trustProxyHeaders = parseBoolLoose(os.Getenv("TRUST_PROXY_HEADERS"))
 	return cfg, nil
 }
 
@@ -85,22 +87,14 @@ func envPositiveInt(key string, def int) (int, error) {
 	return int(n), nil
 }
 
-func cookieSecureMode(v string) (server.CookieSecureMode, error) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "auto":
-		return server.CookieSecureAuto, nil
-	case "true", "1", "on", "yes":
-		return server.CookieSecureAlways, nil
-	case "false", "0", "off", "no":
-		return server.CookieSecureNever, nil
+func envBool(key string, def bool) (bool, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def, nil
 	}
-	return 0, fmt.Errorf("COOKIE_SECURE must be one of: auto, true, false (got %q)", v)
-}
-
-func parseBoolLoose(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "on", "yes":
-		return true
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false (got %q)", key, v)
 	}
-	return false
+	return b, nil
 }

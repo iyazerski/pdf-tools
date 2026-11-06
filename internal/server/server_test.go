@@ -184,6 +184,19 @@ func TestUploadPreviewAndMerge(t *testing.T) {
 	}
 }
 
+func TestCookieSecureModeUnmarshalText(t *testing.T) {
+	for text, want := range map[string]CookieSecureMode{"auto": CookieSecureAuto, "true": CookieSecureAlways, "0": CookieSecureNever} {
+		var got CookieSecureMode
+		if err := got.UnmarshalText([]byte(text)); err != nil || got != want {
+			t.Errorf("UnmarshalText(%q) = %v, %v; want %v, nil", text, got, err, want)
+		}
+	}
+	var m CookieSecureMode
+	if err := m.UnmarshalText([]byte("sometimes")); err == nil {
+		t.Error(`UnmarshalText("sometimes") succeeded; want an error`)
+	}
+}
+
 func TestIndexPagesRenderAllPlaceholders(t *testing.T) {
 	a := newTestServer(t).assets
 	for _, page := range []staticAsset{a.indexAuthed, a.indexAnonymous, a.indexLoginError} {

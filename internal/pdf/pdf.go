@@ -48,8 +48,8 @@ func NewProcessor(timeout time.Duration, maxJobs int) *Processor {
 
 // PageRef selects one page (1-based) of an upload.
 type PageRef struct {
-	Upload string `json:"upload"`
-	Page   int    `json:"page"`
+	Upload string
+	Page   int
 }
 
 // Input is a PDF on disk that Merge can take pages from.

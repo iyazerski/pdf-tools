@@ -133,8 +133,13 @@ func (s *Server) deleteUpload(w http.ResponseWriter, r *http.Request) error {
 }
 
 type mergeRequest struct {
-	Quality int           `json:"quality"`
-	Layout  []pdf.PageRef `json:"layout"`
+	Quality int       `json:"quality"`
+	Layout  []pageRef `json:"layout"`
+}
+
+type pageRef struct {
+	Upload string `json:"upload"`
+	Page   int    `json:"page"`
 }
 
 // merge builds one PDF from the requested pages of earlier uploads.
@@ -168,7 +173,8 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 		}
 	}()
 	inputs := make(map[string]pdf.Input)
-	for _, ref := range req.Layout {
+	layout := make([]pdf.PageRef, len(req.Layout))
+	for i, ref := range req.Layout {
 		upload, ok := held[ref.Upload]
 		if !ok {
 			if len(held) == maxPDFs {
@@ -183,6 +189,7 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 		if ref.Page < 1 || ref.Page > upload.Pages {
 			return badRequest("Invalid page %d (max %d)", ref.Page, upload.Pages)
 		}
+		layout[i] = pdf.PageRef{Upload: ref.Upload, Page: ref.Page}
 	}
 
 	dir, err := os.MkdirTemp("", "merge-")
@@ -191,7 +198,7 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 	}
 	defer os.RemoveAll(dir)
 
-	out, err := s.cfg.PDF.Merge(r.Context(), dir, inputs, req.Layout, req.Quality)
+	out, err := s.cfg.PDF.Merge(r.Context(), dir, inputs, layout, req.Quality)
 	if err != nil {
 		return err
 	}

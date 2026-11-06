@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/iyazerski/pdf-tools/internal/pdf"
@@ -44,6 +46,24 @@ const (
 	CookieSecureAlways
 	CookieSecureNever
 )
+
+// UnmarshalText parses "auto" or a boolean as accepted by strconv.ParseBool.
+func (m *CookieSecureMode) UnmarshalText(text []byte) error {
+	v := strings.TrimSpace(string(text))
+	if strings.EqualFold(v, "auto") {
+		*m = CookieSecureAuto
+		return nil
+	}
+	secure, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("must be auto, true, or false (got %q)", v)
+	}
+	*m = CookieSecureNever
+	if secure {
+		*m = CookieSecureAlways
+	}
+	return nil
+}
 
 // Config holds the dependencies and settings of a Server.
 type Config struct {
