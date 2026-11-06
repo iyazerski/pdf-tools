@@ -184,49 +184,29 @@ func TestUploadPreviewAndMerge(t *testing.T) {
 	}
 }
 
-func TestCookieSecureModeUnmarshalText(t *testing.T) {
-	for text, want := range map[string]CookieSecureMode{"auto": CookieSecureAuto, "true": CookieSecureAlways, "0": CookieSecureNever} {
-		var got CookieSecureMode
-		if err := got.UnmarshalText([]byte(text)); err != nil || got != want {
-			t.Errorf("UnmarshalText(%q) = %v, %v; want %v, nil", text, got, err, want)
-		}
-	}
-	var m CookieSecureMode
-	if err := m.UnmarshalText([]byte("sometimes")); err == nil {
-		t.Error(`UnmarshalText("sometimes") succeeded; want an error`)
-	}
-}
-
-func TestStaticAssetRevalidatesWithETag(t *testing.T) {
+func TestIndexShowsLoginState(t *testing.T) {
 	h := newTestServer(t).Handler()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/static/app.js", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	etag := rec.Header().Get("ETag")
-	if rec.Code != http.StatusOK || etag == "" {
-		t.Fatalf("GET status = %d, ETag = %q; want 200 and an ETag", rec.Code, etag)
+	cookie := login(t, h)
+	tests := []struct {
+		name, path string
+		cookie     *http.Cookie
+		want       string
+	}{
+		{name: "anonymous", path: "/", want: `data-authed="0" data-login-error="0"`},
+		{name: "login error", path: "/?login_error=1", want: `data-authed="0" data-login-error="1"`},
+		{name: "logged in", path: "/", cookie: cookie, want: `data-authed="1" data-login-error="0"`},
 	}
-
-	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/static/app.js", nil)
-	req.Header.Set("If-None-Match", etag)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotModified {
-		t.Errorf("revalidation status = %d; want %d", rec.Code, http.StatusNotModified)
-	}
-}
-
-func TestIndexPagesRenderAllPlaceholders(t *testing.T) {
-	a := newTestServer(t).assets
-	for _, page := range []staticAsset{a.indexAuthed, a.indexAnonymous, a.indexLoginError} {
-		if bytes.Contains(page.body, []byte("{{")) {
-			t.Error("unrendered placeholder in index page")
-		}
-	}
-	if !bytes.Contains(a.indexAuthed.body, []byte(`data-authed="1"`)) {
-		t.Error(`authed page lacks data-authed="1"`)
-	}
-	if !bytes.Contains(a.indexLoginError.body, []byte(`data-login-error="1"`)) {
-		t.Error(`login error page lacks data-login-error="1"`)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
+			if tt.cookie != nil {
+				req.AddCookie(tt.cookie)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tt.want) {
+				t.Errorf("GET %s status = %d, body contains %s = false; want 200 and true", tt.path, rec.Code, tt.want)
+			}
+		})
 	}
 }

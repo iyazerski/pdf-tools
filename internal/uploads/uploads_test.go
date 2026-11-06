@@ -28,16 +28,30 @@ func assertDirExists(t *testing.T, dir string, want bool) {
 	}
 }
 
-func TestSweepDeletesExpiredUploads(t *testing.T) {
-	s := NewStore(time.Minute, 10)
-	id, dir := putOne(t, s)
+func TestRunDeletesExpiredUploadsThenAllOnStop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := NewStore(time.Minute, 10)
+		expired, expiredDir := putOne(t, s)
+		ctx, stop := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			s.Run(ctx)
+			close(done)
+		}()
 
-	s.sweep(time.Now().Add(61 * time.Second))
+		// The first sweep finds the upload idle for exactly the TTL, so the second deletes it.
+		time.Sleep(2*sweepInterval + time.Second)
+		synctest.Wait()
+		if _, ok := s.Get(expired); ok {
+			t.Error("expired upload is still in the store")
+		}
+		assertDirExists(t, expiredDir, false)
 
-	if _, ok := s.Get(id); ok {
-		t.Error("expired upload is still in the store")
-	}
-	assertDirExists(t, dir, false)
+		_, freshDir := putOne(t, s)
+		stop()
+		<-done
+		assertDirExists(t, freshDir, false)
+	})
 }
 
 func TestPutEvictsLeastRecentlyUsed(t *testing.T) {
