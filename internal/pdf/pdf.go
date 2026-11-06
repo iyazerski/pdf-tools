@@ -5,7 +5,6 @@
 package pdf
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,8 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -142,11 +141,18 @@ func newConfig() *model.Configuration {
 	return conf
 }
 
-// compress concatenates the PDFs in inputs with Ghostscript, downsampling images to match
-// quality, and returns the new file's path in dir.
+// compress concatenates the PDFs in inputs with Ghostscript, downsampling and re-encoding
+// images to match quality, and returns the new file's path in dir.
 func (p *Processor) compress(ctx context.Context, dir string, inputs []string, quality int) (string, error) {
 	out := filepath.Join(dir, "compressed.pdf")
-	dpi, jpegQuality := qualityToGhostscriptParams(quality)
+	dpi, qFactor := qualityToGhostscriptParams(quality)
+	// pdfwrite ignores -dJPEGQ, which only applies to the jpeg output devices. JPEG quality
+	// comes from the QFactor of the image dictionaries instead. The ACS dictionaries apply
+	// when gs picks JPEG on its own (photos), so flat images such as screenshots keep their
+	// lossless encoding.
+	jpegDict := fmt.Sprintf("<< /QFactor %s /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >>",
+		strconv.FormatFloat(qFactor, 'f', 2, 64))
+	distillerParams := fmt.Sprintf("<< /ColorACSImageDict %[1]s /GrayACSImageDict %[1]s >> setdistillerparams", jpegDict)
 	args := []string{
 		"-sDEVICE=pdfwrite",
 		// Keep gs's default compatibility level: forcing 1.4 makes it re-encode ICC-based
@@ -159,8 +165,12 @@ func (p *Processor) compress(ctx context.Context, dir string, inputs []string, q
 		"-dColorImageResolution=" + strconv.Itoa(dpi),
 		"-dGrayImageResolution=" + strconv.Itoa(dpi),
 		"-dMonoImageResolution=600",
-		"-dJPEGQ=" + strconv.Itoa(jpegQuality),
+		// Without this, JPEG images that need no downsampling are copied as they are.
+		"-dPassThroughJPEGImages=false",
+		// gs reads the options after -c as PostScript, so the output file must come first.
 		"-sOutputFile=" + out,
+		"-c", distillerParams,
+		"-f",
 	}
 	return out, p.runGhostscript(ctx, append(args, inputs...)...)
 }
@@ -190,12 +200,12 @@ func (p *Processor) runGhostscript(ctx context.Context, args ...string) error {
 	return p.do(ctx, "ghostscript", func(ctx context.Context) error {
 		args = append([]string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH"}, args...)
 		cmd := exec.CommandContext(ctx, "gs", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		stderr := &prefixWriter{max: maxStderrBytes}
+		cmd.Stderr = stderr
 		// Don't wait forever for output pipes after the process is killed.
 		cmd.WaitDelay = 5 * time.Second
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%w: %s", err, truncate(stderr.String(), 512))
+			return fmt.Errorf("%w: %s", err, stderr)
 		}
 		return nil
 	})
@@ -271,22 +281,40 @@ func isWholeDocument(pages []int, total int) bool {
 	return true
 }
 
-// qualityToGhostscriptParams maps quality (MinQuality to LosslessQuality) linearly to an image resolution of 72
-// to 300 DPI and a JPEG quality of 20 to 95.
-func qualityToGhostscriptParams(quality int) (dpi, jpegQuality int) {
+// qualityToGhostscriptParams maps quality (MinQuality to LosslessQuality) linearly to an
+// image resolution of 72 to 300 DPI and a JPEG QFactor of 2.4 to 0.15. Those QFactors are
+// Acrobat Distiller's "minimum" and "maximum" JPEG quality, and lower means better.
+func qualityToGhostscriptParams(quality int) (dpi int, qFactor float64) {
 	t := float64(min(max(quality, MinQuality), LosslessQuality)-MinQuality) / (LosslessQuality - MinQuality)
 	dpi = int(math.Round(72 + t*(300-72)))
-	jpegQuality = int(math.Round(20 + t*(95-20)))
-	return dpi, jpegQuality
+	qFactor = 2.4 - t*(2.4-0.15)
+	return dpi, qFactor
 }
 
-func truncate(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
+// maxStderrBytes caps how much of a child process's stderr goes into its error.
+const maxStderrBytes = 512
+
+// prefixWriter keeps the first max bytes written to it and discards the rest, so a chatty
+// child process can't grow memory without bound.
+type prefixWriter struct {
+	buf       []byte
+	max       int
+	truncated bool
+}
+
+func (w *prefixWriter) Write(p []byte) (int, error) {
+	n := min(len(p), w.max-len(w.buf))
+	w.buf = append(w.buf, p[:n]...)
+	w.truncated = w.truncated || n < len(p)
+	// Report every byte as written: a short write would make exec stop draining the pipe.
+	return len(p), nil
+}
+
+// String returns the kept bytes, marking dropped output with an ellipsis.
+func (w *prefixWriter) String() string {
+	if !w.truncated {
+		return string(w.buf)
 	}
-	end := maxBytes
-	for end > 0 && !utf8.RuneStart(s[end]) {
-		end--
-	}
-	return s[:end] + "…"
+	// The cut can split a multi-byte rune, so drop its partial bytes.
+	return strings.ToValidUTF8(string(w.buf), "") + "…"
 }

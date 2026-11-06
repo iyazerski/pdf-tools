@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"math"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,22 +23,61 @@ import (
 // their width.
 func writePDF(t *testing.T, path string, widths ...int) {
 	t.Helper()
-	var b bytes.Buffer
-	var offsets []int
-	obj := func(body string) {
-		offsets = append(offsets, b.Len())
-		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", len(offsets), body)
-	}
-
-	b.WriteString("%PDF-1.4\n")
 	kids := make([]string, len(widths))
 	for i := range widths {
 		kids[i] = fmt.Sprintf("%d 0 R", i+3)
 	}
-	obj("<< /Type /Catalog /Pages 2 0 R >>")
-	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(widths)))
+	objects := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(widths)),
+	}
 	for _, w := range widths {
-		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 %d 100] >>", w))
+		objects = append(objects, fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 %d 100] >>", w))
+	}
+	writeObjects(t, path, objects)
+}
+
+// writeImagePDF writes a one-page PDF that shows a photo-like size x size JPEG at 72 DPI,
+// so Ghostscript never downsamples it and only JPEG re-encoding changes its size.
+func writeImagePDF(t *testing.T, path string, size int) {
+	t.Helper()
+	// Smooth waves with mild noise: Ghostscript keeps pure noise lossless, because it
+	// only picks JPEG for images that look like photos.
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	rng := rand.New(rand.NewPCG(1, 2))
+	for y := range size {
+		for x := range size {
+			wave := 100 * math.Sin(float64(x)/20) * math.Cos(float64(y)/25)
+			for c := range 3 {
+				img.Pix[img.PixOffset(x, y)+c] = uint8(128 + wave + float64(rng.IntN(41)-20) - float64(c*10))
+			}
+			img.Pix[img.PixOffset(x, y)+3] = 255
+		}
+	}
+	var jpg bytes.Buffer
+	if err := jpeg.Encode(&jpg, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("q %d 0 0 %d 0 0 cm /Im0 Do Q", size, size)
+	writeObjects(t, path, []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R /MediaBox [0 0 %d %d] >>", size, size),
+		fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%s\nendstream", size, size, jpg.Len(), jpg.Bytes()),
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content),
+	})
+}
+
+// writeObjects writes a PDF whose objects are numbered from 1 in order, with object 1 as
+// its catalog.
+func writeObjects(t *testing.T, path string, objects []string) {
+	t.Helper()
+	var b bytes.Buffer
+	var offsets []int
+	b.WriteString("%PDF-1.4\n")
+	for _, body := range objects {
+		offsets = append(offsets, b.Len())
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", len(offsets), body)
 	}
 	xref := b.Len()
 	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(offsets)+1)
@@ -155,6 +198,45 @@ func TestMerge(t *testing.T) {
 				t.Errorf("page widths = %v; want %v", got, tt.wantWidths)
 			}
 		})
+	}
+}
+
+func TestLowerQualityShrinksImages(t *testing.T) {
+	if _, err := exec.LookPath("gs"); err != nil {
+		t.Skip("lossy merges need Ghostscript (gs)")
+	}
+	in := filepath.Join(t.TempDir(), "image.pdf")
+	writeImagePDF(t, in, 400)
+	inputs := map[string]Input{"a": {Path: in, Pages: 1}}
+	layout := []PageRef{{Upload: "a", Page: 1}}
+
+	size := func(quality int) int64 {
+		t.Helper()
+		out, err := NewProcessor(time.Minute).Merge(t.Context(), t.TempDir(), inputs, layout, quality)
+		if err != nil {
+			t.Fatalf("Merge(quality %d): %v", quality, err)
+		}
+		info, err := os.Stat(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Size()
+	}
+	if low, high := size(MinQuality), size(90); low*2 > high {
+		t.Errorf("output size at quality %d = %d, at 90 = %d; want under half", MinQuality, low, high)
+	}
+}
+
+func TestPrefixWriter(t *testing.T) {
+	w := &prefixWriter{max: 4}
+	for _, s := range []string{"ab", "cé", "tail"} {
+		if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v; want %d, nil", s, n, err, len(s))
+		}
+	}
+	// "é" is 2 bytes, and only its first byte fits.
+	if got, want := w.String(), "abc…"; got != want {
+		t.Errorf("String() = %q; want %q", got, want)
 	}
 }
 
