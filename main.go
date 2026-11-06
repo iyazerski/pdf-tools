@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,8 +28,16 @@ const (
 	// Keeps worst-case disk use (entries x max file size plus one merge) under the 2Gi
 	// emptyDir.
 	uploadCacheMaxEntries = 15
-	// Stays below the pod's default 30s termination grace period.
-	shutdownTimeout = 25 * time.Second
+	// Shutdown waits drainTimeout for requests to finish, then cancels them and waits
+	// cancelTimeout more for them to stop. Together they stay below the pod's default 30s
+	// termination grace period.
+	drainTimeout  = 20 * time.Second
+	cancelTimeout = 7 * time.Second
+
+	// Uploads of maxFileBytes must fit in readTimeout on slow links. writeTimeout runs from
+	// the end of the request headers, so it also covers reading the body and a PDF job.
+	readTimeout  = 5 * time.Minute
+	writeTimeout = 10 * time.Minute
 )
 
 // Assets are compiled into the binary: no file I/O per request and nothing to copy at deploy.
@@ -83,11 +92,17 @@ func run() error {
 	}()
 	wg.Go(func() { store.Run(sweepCtx) })
 
+	// Canceling requestsCtx cancels every request, which stops their PDF jobs.
+	requestsCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
 	httpServer := &http.Server{
 		Addr:              cfg.bindAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       2 * time.Minute,
+		BaseContext:       func(net.Listener) context.Context { return requestsCtx },
 	}
 	serveErr := make(chan error, 1)
 	wg.Go(func() {
@@ -102,12 +117,32 @@ func run() error {
 		slog.Info("shutdown signal received")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shut down: %w", err)
+	if err := shutdown(httpServer, cancelRequests, drainTimeout, cancelTimeout); err != nil {
+		return err
 	}
 	slog.Info("server stopped")
+	return nil
+}
+
+// shutdown stops srv and returns once its handlers are done. Handlers that outlast drain
+// are canceled with cancelRequests and get cancelWait more to return. Handlers must be done
+// before uploads are deleted, or running jobs lose their input files.
+func shutdown(srv *http.Server, cancelRequests context.CancelFunc, drain, cancelWait time.Duration) error {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), drain)
+	defer cancelDrain()
+	err := srv.Shutdown(drainCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	slog.Warn("requests still running after the drain timeout, canceling them")
+	cancelRequests()
+	waitCtx, cancelWaitCtx := context.WithTimeout(context.Background(), cancelWait)
+	defer cancelWaitCtx()
+	// Shutdown again only waits: its listeners are already closed.
+	if err := srv.Shutdown(waitCtx); err != nil {
+		return errors.Join(fmt.Errorf("wait for canceled requests: %w", err), srv.Close())
+	}
 	return nil
 }
 
