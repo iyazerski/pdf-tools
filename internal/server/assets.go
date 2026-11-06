@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -34,13 +36,25 @@ type staticAsset struct {
 	body        []byte
 	contentType string
 	cache       string
+	etag        string
 }
 
-func (a staticAsset) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+func newStaticAsset(body []byte, contentType, cache string) staticAsset {
+	sum := sha256.Sum256(body)
+	return staticAsset{
+		body:        body,
+		contentType: contentType,
+		cache:       cache,
+		etag:        `"` + hex.EncodeToString(sum[:8]) + `"`,
+	}
+}
+
+func (a staticAsset) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", a.contentType)
 	w.Header().Set("Cache-Control", a.cache)
-	// A failed write means the client is gone, and there's nobody left to tell.
-	_, _ = w.Write(a.body)
+	// With an ETag, revalidations get a 304 instead of the whole body again.
+	w.Header().Set("ETag", a.etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.body))
 }
 
 func loadAssets(fsys fs.FS) (*assets, error) {
@@ -60,7 +74,7 @@ func loadAssets(fsys fs.FS) (*assets, error) {
 		if err != nil {
 			return nil, err
 		}
-		a.static[f.urlPath] = staticAsset{body: body, contentType: f.contentType, cache: f.cache}
+		a.static[f.urlPath] = newStaticAsset(body, f.contentType, f.cache)
 	}
 
 	template, err := fs.ReadFile(fsys, "templates/index.html")
@@ -85,7 +99,7 @@ func loadAssets(fsys fs.FS) (*assets, error) {
 			authDataPlaceholder, authed,
 			loginErrorDataPlaceholder, loginError,
 		).Replace(string(template))
-		return staticAsset{body: []byte(page), contentType: "text/html; charset=utf-8", cache: cacheNoCache}
+		return newStaticAsset([]byte(page), "text/html; charset=utf-8", cacheNoCache)
 	}
 	a.indexAuthed = render("1", "0")
 	a.indexAnonymous = render("0", "0")

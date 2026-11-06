@@ -197,6 +197,25 @@ func TestCookieSecureModeUnmarshalText(t *testing.T) {
 	}
 }
 
+func TestStaticAssetRevalidatesWithETag(t *testing.T) {
+	h := newTestServer(t).Handler()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/static/app.js", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	etag := rec.Header().Get("ETag")
+	if rec.Code != http.StatusOK || etag == "" {
+		t.Fatalf("GET status = %d, ETag = %q; want 200 and an ETag", rec.Code, etag)
+	}
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/static/app.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("revalidation status = %d; want %d", rec.Code, http.StatusNotModified)
+	}
+}
+
 func TestIndexPagesRenderAllPlaceholders(t *testing.T) {
 	a := newTestServer(t).assets
 	for _, page := range []staticAsset{a.indexAuthed, a.indexAnonymous, a.indexLoginError} {
