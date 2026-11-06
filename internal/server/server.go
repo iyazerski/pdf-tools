@@ -32,7 +32,6 @@ const (
 
 	sessionCookieName = "pdf_tools_session"
 
-	// Per client IP: 5 attempts at once, then one more every 2 seconds.
 	loginRateLimitPeriod = 2 * time.Second
 	loginRateLimitBurst  = 5
 )

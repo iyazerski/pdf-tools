@@ -1,7 +1,7 @@
 (() => {
   const MAX_FILES = 10;
   const MAX_FILE_BYTES = 30 * 1024 * 1024;
-  // Matches the server: at 100 pages are copied as-is, without lossy recompression.
+  // Matches the server, which copies pages as-is at this quality, without recompression.
   const LOSSLESS_QUALITY = 100;
 
   const dropzone = document.getElementById("dropzone");

@@ -1,95 +1,125 @@
 # pdf-tools
 
-Minimal PDF merge web app (Go) with a simple login, drag&drop upload, ordering, and a quality slider.
+A small web app for merging PDFs. You log in, drop in up to 10 PDFs, arrange their pages,
+pick a quality, and download one merged PDF.
+
+It's a single Go binary with no database. Uploaded files are kept in a temporary directory
+for a while and then deleted.
 
 ## Features
 
-- Authenticated web UI (username/password from env, no DB)
-- Upload up to 10 PDFs via drag&drop
-- Max 30 MB per PDF
-- Reorder PDFs (drag to reorder)
-- Page-level editing (expand document, reorder/remove pages, insert another document between pages)
-- Merge into a single PDF in the selected order
-- Quality slider controls Ghostscript downsampling/JPEG quality (100 = original, no recompression)
-- No persistence: nothing stored beyond each request; refresh clears client-side list
+- Upload up to 10 PDFs (30 MB each) by drag and drop.
+- Reorder whole documents, or expand one to reorder, remove, or preview its pages.
+- Insert pages of one document between pages of another.
+- Shrink the output with a quality slider. At 100, pages are copied as-is.
+- Log in with a single username and password, set in the environment.
 
-## Local run (Docker)
+## Quick start
+
+You need:
+
+- [Go](https://go.dev/dl/) (the version in `go.mod`)
+- [Ghostscript](https://www.ghostscript.com) (`brew install ghostscript` on macOS). It's used
+  for page previews and for compression below quality 100.
+
+Create a `.env` file in the repo root. The app reads it on startup.
 
 ```bash
-docker build -t pdf-tools:local .
-docker run --rm -p 8091:8091 \
-  -e APP_USERNAME=admin \
-  -e APP_PASSWORD=admin \
-  -e SESSION_SECRET="change-me-please" \
-  pdf-tools:local
+APP_USERNAME=admin
+APP_PASSWORD=admin
+SESSION_SECRET=any-long-random-string
 ```
 
-Open `http://localhost:8091`.
-
-## Local run (Go)
-
-Create a `.env` file (the app automatically reads it on startup) and run:
-
-Prereqs:
-
-- Go (version in `go.mod`)
-- Ghostscript (`gs`), for compression and page previews
+Then run the app:
 
 ```bash
 go run .
 ```
 
-Page counting and page assembly use [pdfcpu](https://github.com/pdfcpu/pdfcpu) in-process.
+Open http://localhost:8091 and log in with the username and password from `.env`.
+
+The HTML, JS, and CSS are compiled into the binary, so restart `go run .` after you change
+them.
+
+### With Docker instead
+
+The image already includes Ghostscript:
+
+```bash
+docker build -t pdf-tools .
+docker run --rm -p 8091:8091 \
+  -e APP_USERNAME=admin -e APP_PASSWORD=admin -e SESSION_SECRET=any-long-random-string \
+  pdf-tools
+```
+
+## How it works
+
+1. **Upload.** The browser sends each PDF to `POST /api/npages`. The server saves it to its
+   own temporary directory, counts its pages, and returns an upload ID and the page count.
+2. **Preview.** Thumbnails and full-size pages come from `GET /api/page/{upload}/{page}`.
+   Ghostscript renders them on first request, and the server reuses them after that.
+3. **Merge.** `POST /api/merge` gets the page layout as a list of `(upload ID, page)` pairs
+   and a quality. The server builds the PDF with [pdfcpu](https://github.com/pdfcpu/pdfcpu).
+   Below quality 100, Ghostscript then re-encodes the images to make the file smaller.
+4. **Cleanup.** An upload is deleted when you remove it in the UI, when it's idle for longer
+   than `UPLOAD_CACHE_TTL_SECS`, or when the server stops.
+
+All `/api/` routes need a valid session cookie. The server runs only `MAX_PDF_JOBS` PDF jobs
+at once. When it's busy, other requests wait for a free slot or get a `503`.
+
+## Project layout
+
+| Path | What's there |
+|---|---|
+| `main.go`, `config.go` | Startup, environment config, and graceful shutdown |
+| `internal/server/` | HTTP routes, login, rate limiting, uploads API, previews, static assets |
+| `internal/pdf/` | Page counting, merging, compression, and rendering (pdfcpu and Ghostscript) |
+| `internal/uploads/` | Keeps uploaded files on disk and deletes them when they expire |
+| `internal/session/` | Checks the login and signs session cookies |
+| `internal/pdftest/` | Helpers that write tiny PDFs for tests |
+| `templates/`, `static/` | The single-page UI (`index.html`, `app.js`, `styles.css`) |
+| `k8s/`, `.github/workflows/`, `scripts/` | Deployment |
 
 ## Development
 
-### prek
+Run the tests:
 
-Install [prek](https://prek.j178.dev) (e.g. `brew install prek`) and enable hooks:
+```bash
+go test ./...
+```
+
+Tests that need Ghostscript are skipped when `gs` isn't installed.
+
+The repo uses [prek](https://prek.j178.dev) for git hooks (`brew install prek`). Enable
+them once:
 
 ```bash
 prek install
 ```
 
-Hooks run `gofmt`, `go fix`, `go mod tidy`, `govulncheck`, `golangci-lint` and `go test -race` on commit.
+On every commit, the hooks run `gofmt`, `go fix`, `go mod tidy`, `govulncheck`,
+`golangci-lint`, and `go test -race`. To run them by hand, use `prek run --all-files`.
+CI runs the same hooks.
 
 ## Configuration
 
-- `APP_USERNAME` / `APP_PASSWORD` (required)
-- `SESSION_SECRET` (required; random long string)
-- `BIND_ADDR` (default `0.0.0.0:8091`)
-- `UPLOAD_CACHE_TTL_SECS` (default `1200`; idle uploads are deleted after this)
-- `EXTERNAL_PROCESS_TIMEOUT_SECS` (default `120`; per PDF job, e.g. one merge; a job that waits this long for a free slot fails with 503)
-- `MAX_PDF_JOBS` (default `2`; PDF jobs that run at once, each using up to a full CPU and hundreds of MB)
-- `COOKIE_SECURE` (`auto` | `true` | `false`, default `auto`)
-- `TRUST_PROXY_HEADERS` (default `false`; set when behind Traefik)
-- `LOG_LEVEL` (`debug` | `info` | `warn` | `error`, default `info`)
+All settings come from environment variables (or `.env`).
 
-Static assets and the page template are compiled into the binary, so changes need a rebuild.
+| Variable | Default | Meaning |
+|---|---|---|
+| `APP_USERNAME`, `APP_PASSWORD` | required | The login |
+| `SESSION_SECRET` | required | Key that signs session cookies. Use a long random string. |
+| `BIND_ADDR` | `0.0.0.0:8091` | Address to listen on |
+| `UPLOAD_CACHE_TTL_SECS` | `1200` | Uploads idle for this long are deleted |
+| `EXTERNAL_PROCESS_TIMEOUT_SECS` | `120` | Time limit for one PDF job, and for waiting for a free slot |
+| `MAX_PDF_JOBS` | `2` | PDF jobs that run at once. Each can use a full CPU and hundreds of MB. |
+| `COOKIE_SECURE` | `auto` | `true`, `false`, or `auto` (secure when a trusted proxy reports HTTPS) |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-*` headers. Set it to `true` behind a reverse proxy. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 
-## Kubernetes + GitHub Actions
+## Deployment
 
-Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (prek, which
-also runs the tests). When CI passes, `.github/workflows/cd.yaml` deploys that commit:
-
-- builds & pushes `ghcr.io/<owner>/pdf-tools:app-<sha>` (and `app-latest`) to GHCR
-- creates/updates `pdf-tools-secrets` in the target namespace
-- applies a cert-manager `ClusterIssuer` for Let's Encrypt (required secret: `LETSENCRYPT_EMAIL`)
-- applies the manifests, waits for rollout, and smoke-checks the public site
-- restores the previous release when the rollout or smoke check fails
-
-To redeploy manually, run the CD workflow and type `deploy` to confirm. The public host defaults to
-`pdftools.iyazerski.dev` and can be changed with the `PUBLIC_HOST` repository variable.
-
-### HTTPS (Ingress + Let's Encrypt)
-
-This repo assumes the cluster already has:
-
-- Traefik installed (default for k3s) exposed on ports 80/443 with entryPoints `web` and `websecure`
-- cert-manager installed (to provision TLS certs via Let's Encrypt)
-
-The app is exposed on `PUBLIC_HOST` via:
-
-- `k8s/traefik.yaml` (middlewares + ServersTransport)
-- `k8s/certificate.yaml` (cert-manager Certificate)
-- `k8s/ingressroute.yaml` (Traefik IngressRoute)
+Each push to `main` runs CI. If CI passes, the CD workflow builds an image, pushes it to
+GHCR, and deploys it to a Kubernetes cluster with Traefik and cert-manager. If the rollout
+or a smoke check of the public site fails, it rolls back. See `.github/workflows/cd.yaml`
+and `k8s/` for the details.
