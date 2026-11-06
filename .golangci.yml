@@ -1,0 +1,23 @@
+# golangci-lint v2. Run with `golangci-lint run` or through the pre-commit hooks.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose # response bodies that are never closed
+    - containedctx # context.Context stored in a struct
+    - errorlint # == and type switches on wrapped errors, %v instead of %w
+    - forcetypeassert # unchecked type assertions that panic
+    - modernize # the same modernizers as `go fix` and gopls hints
+    - noctx # HTTP requests and commands without a context
+    - rowserrcheck # sql.Rows.Err never checked after iteration
+    - sqlclosecheck # sql.Rows and statements never closed
+  exclusions:
+    # Unchecked Close, Flush, and print errors on read paths are idiomatic.
+    # Writers must still check Close; review that by hand.
+    presets: [std-error-handling]
+
+formatters:
+  enable:
+    - gofmt

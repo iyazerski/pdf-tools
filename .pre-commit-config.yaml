@@ -1,26 +1,55 @@
+# Run with `prek run --all-files` (or `prek install` to run on every commit).
 repos:
+  - repo: builtin
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+        # The k8s manifests hold several documents per file.
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-json
+
   - repo: local
     hooks:
-      - id: cargo-fmt
-        name: cargo fmt
-        entry: cargo fmt --all
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -w
         language: system
-        pass_filenames: false
-        always_run: true
-        types: [rust]
+        types: [go]
 
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+      # Applies the modernizers that gopls shows as hints in the editor.
+      - id: go-fix
+        name: go fix
+        entry: go fix ./...
         language: system
         pass_filenames: false
-        always_run: true
-        types: [rust]
+        types: [go]
 
-      - id: cargo-check-locked
-        name: cargo check --locked
-        entry: cargo check --locked
+      - id: go-mod-tidy
+        name: go mod tidy
+        entry: go mod tidy
         language: system
         pass_filenames: false
-        always_run: true
-        types: [rust]
+        files: (\.go|^go\.(mod|sum))$
+
+      - id: govulncheck
+        name: govulncheck
+        entry: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+        language: system
+        pass_filenames: false
+        files: ^go\.(mod|sum)$
+
+      - id: golangci-lint
+        name: golangci-lint
+        entry: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run
+        language: system
+        pass_filenames: false
+        types: [go]
+
+      - id: go-test
+        name: go test
+        entry: go test -race ./...
+        language: system
+        pass_filenames: false
+        types: [go]

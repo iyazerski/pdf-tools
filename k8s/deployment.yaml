@@ -54,6 +54,10 @@ spec:
               value: auto
             - name: TRUST_PROXY_HEADERS
               value: "1"
+            # Soft Go heap target. Ghostscript runs outside the Go heap, so this stays well
+            # below the 512Mi limit.
+            - name: GOMEMLIMIT
+              value: 256MiB
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

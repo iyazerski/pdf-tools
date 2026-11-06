@@ -1,26 +1,20 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.92-trixie AS chef
-WORKDIR /app
+FROM golang:1.27-trixie AS build
+WORKDIR /src
 
-FROM chef AS planner
+# Download modules in their own layer so source-only changes reuse it.
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-# Build dependencies in their own layer so source-only changes reuse it.
-FROM chef AS build
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json
-COPY . .
-RUN cargo build --release --locked
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pdf-tools .
 
 FROM debian:trixie-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ghostscript qpdf \
+  && apt-get install -y --no-install-recommends ghostscript \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /app/target/release/pdf-tools /usr/local/bin/pdf-tools
+COPY --from=build /out/pdf-tools /usr/local/bin/pdf-tools
 
-ENV RUST_LOG=info
 EXPOSE 8091
 USER 10001:10001
 CMD ["pdf-tools"]

@@ -1,6 +1,6 @@
 # pdf-tools
 
-Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, ordering, and a quality slider.
+Minimal PDF merge web app (Go) with a simple login, drag&drop upload, ordering, and a quality slider.
 
 ## Features
 
@@ -11,7 +11,6 @@ Minimal PDF merge web app (Rust + axum) with a simple login, drag&drop upload, o
 - Page-level editing (expand document, reorder/remove pages, insert another document between pages)
 - Merge into a single PDF in the selected order
 - Quality slider controls Ghostscript downsampling/JPEG quality (100 = original, no recompression)
-- Optional linearization for fast web view
 - No persistence: nothing stored beyond each request; refresh clears client-side list
 
 ## Local run (Docker)
@@ -27,19 +26,20 @@ docker run --rm -p 8091:8091 \
 
 Open `http://localhost:8091`.
 
-## Local run (Cargo)
+## Local run (Go)
 
 Create a `.env` file (the app automatically reads it on startup) and run:
 
 Prereqs:
 
-- Rust
-- Ghostscript (`gs`)
-- qpdf (`qpdf`)
+- Go (version in `go.mod`)
+- Ghostscript (`gs`), for compression and page previews
 
 ```bash
-cargo run
+go run .
 ```
+
+Page counting and page assembly use [pdfcpu](https://github.com/pdfcpu/pdfcpu) in-process.
 
 ## Development
 
@@ -51,7 +51,7 @@ Install [prek](https://prek.j178.dev) (e.g. `brew install prek`) and enable hook
 prek install
 ```
 
-Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
+Hooks run `gofmt`, `go fix`, `go mod tidy`, `govulncheck`, `golangci-lint` and `go test -race` on commit.
 
 ## Configuration
 
@@ -59,16 +59,17 @@ Hooks run `cargo fmt`, `cargo clippy` and `cargo check --locked` on commit.
 - `SESSION_SECRET` (required; random long string)
 - `BIND_ADDR` (default `0.0.0.0:8091`)
 - `UPLOAD_CACHE_TTL_SECS` (default `1200`; idle uploads are deleted after this)
-- `EXTERNAL_PROCESS_TIMEOUT_SECS` (default `120`; per gs/qpdf run)
+- `EXTERNAL_PROCESS_TIMEOUT_SECS` (default `120`; per PDF job, e.g. one gs run)
 - `COOKIE_SECURE` (`auto` | `true` | `false`, default `auto`)
 - `TRUST_PROXY_HEADERS` (default `false`; set when behind Traefik)
+- `LOG_LEVEL` (`debug` | `info` | `warn` | `error`, default `info`)
 
 Static assets and the page template are compiled into the binary, so changes need a rebuild.
 
 ## Kubernetes + GitHub Actions
 
-Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (prek and
-`cargo test`). When CI passes, `.github/workflows/cd.yaml` deploys that commit:
+Manifests are in `k8s/`. Every push to `main` runs `.github/workflows/ci.yaml` (prek, which
+also runs the tests). When CI passes, `.github/workflows/cd.yaml` deploys that commit:
 
 - builds & pushes `ghcr.io/<owner>/pdf-tools:app-<sha>` (and `app-latest`) to GHCR
 - creates/updates `pdf-tools-secrets` in the target namespace

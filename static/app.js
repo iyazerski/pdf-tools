@@ -13,7 +13,6 @@
   const count = document.getElementById("count");
   const quality = document.getElementById("quality");
   const qualityValue = document.getElementById("qualityValue");
-  const linearize = document.getElementById("linearize");
   const inputSize = document.getElementById("inputSize");
   const estimatedSize = document.getElementById("estimatedSize");
   const toast = document.getElementById("toast");
@@ -641,10 +640,6 @@
     setUiState();
   });
 
-  if (linearize) {
-    linearize.addEventListener("change", () => setUiState());
-  }
-
   clearBtn.addEventListener("click", () => {
     for (const d of docs.values()) {
       if (d.uploadId) void deleteUpload(d.uploadId);
@@ -747,7 +742,6 @@
     try {
       const payload = {
         quality: Number(quality.value),
-        linearize: Boolean(linearize && linearize.checked),
         layout,
       };
 
