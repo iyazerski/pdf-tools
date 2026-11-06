@@ -18,7 +18,15 @@ import (
 const (
 	maxPDFs      = 10
 	maxFileBytes = 30 << 20
-	maxBodyBytes = maxFileBytes + 5<<20
+	// Bounds the work and temporary files of one merge.
+	maxLayoutPages = 5000
+
+	// Request body limits. An upload adds room for the multipart framing, and a merge
+	// request fits maxLayoutPages page references. Everything else is a small form or has
+	// no body.
+	maxUploadBodyBytes = maxFileBytes + 1<<20
+	maxMergeBodyBytes  = 1 << 20
+	maxSmallBodyBytes  = 4 << 10
 
 	sessionCookieName = "pdf_tools_session"
 
@@ -82,24 +90,26 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("GET /favicon.ico", http.RedirectHandler("/favicon.svg", http.StatusPermanentRedirect))
 
-	s.handle(mux, "GET /{$}", s.index)
+	s.handle(mux, "GET /{$}", maxSmallBodyBytes, s.index)
 	// Only login needs throttling (password guessing). Limiting the API would break bursts
 	// of thumbnail requests.
-	s.handle(mux, "POST /login", s.rateLimited(s.login))
-	s.handle(mux, "POST /logout", s.logout)
-	s.handle(mux, "POST /api/npages", s.npages)
-	s.handle(mux, "POST /api/merge", s.merge)
-	s.handle(mux, "GET /api/page/{upload}/{page}", s.pageImage)
-	s.handle(mux, "DELETE /api/upload/{upload}", s.deleteUpload)
+	s.handle(mux, "POST /login", maxSmallBodyBytes, s.rateLimited(s.login))
+	s.handle(mux, "POST /logout", maxSmallBodyBytes, s.logout)
+	s.handle(mux, "POST /api/npages", maxUploadBodyBytes, s.authed(s.npages))
+	s.handle(mux, "POST /api/merge", maxMergeBodyBytes, s.authed(s.merge))
+	s.handle(mux, "GET /api/page/{upload}/{page}", maxSmallBodyBytes, s.authed(s.pageImage))
+	s.handle(mux, "DELETE /api/upload/{upload}", maxSmallBodyBytes, s.authed(s.deleteUpload))
 	return mux
 }
 
 // handlerFunc is an HTTP handler that reports failures as an error instead of writing them.
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
-func (s *Server) handle(mux *http.ServeMux, pattern string, h handlerFunc) {
+// handle registers h for pattern, with request logging and a request body of at most
+// maxBody bytes.
+func (s *Server) handle(mux *http.ServeMux, pattern string, maxBody int64, h handlerFunc) {
 	mux.Handle(pattern, logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		if err := h(w, r); err != nil {
 			writeError(w, r, err)
 		}

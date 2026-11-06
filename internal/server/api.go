@@ -38,9 +38,6 @@ type npagesResponse struct {
 
 // npages stores the uploaded PDF and returns its upload ID and page count.
 func (s *Server) npages(w http.ResponseWriter, r *http.Request) (err error) {
-	if err := s.requireAuth(r); err != nil {
-		return err
-	}
 	mr, err := r.MultipartReader()
 	if err != nil {
 		slog.Error("multipart parse failed", "error", err)
@@ -141,9 +138,6 @@ func multipartError(err error) error {
 
 // pageImage returns a JPEG of one page of an upload, rendering it on first use.
 func (s *Server) pageImage(w http.ResponseWriter, r *http.Request) error {
-	if err := s.requireAuth(r); err != nil {
-		return err
-	}
 	upload, ok := s.cfg.Uploads.Get(r.PathValue("upload"))
 	if !ok {
 		return badRequest("Unknown upload id")
@@ -206,9 +200,6 @@ func (s *Server) fullPage(r *http.Request, upload *uploads.Upload, page int) (st
 }
 
 func (s *Server) deleteUpload(w http.ResponseWriter, r *http.Request) error {
-	if err := s.requireAuth(r); err != nil {
-		return err
-	}
 	s.cfg.Uploads.Remove(r.PathValue("upload"))
 	w.WriteHeader(http.StatusNoContent)
 	return nil
@@ -221,9 +212,6 @@ type mergeRequest struct {
 
 // merge builds one PDF from the requested pages of earlier uploads.
 func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
-	if err := s.requireAuth(r); err != nil {
-		return err
-	}
 	if mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mediaType != "application/json" {
 		return &httpError{status: http.StatusUnsupportedMediaType, msg: "Expected Content-Type: application/json"}
 	}
@@ -237,6 +225,9 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 	}
 	if len(req.Layout) == 0 {
 		return badRequest("Layout is empty")
+	}
+	if len(req.Layout) > maxLayoutPages {
+		return badRequest("Too many pages (max %d)", maxLayoutPages)
 	}
 	if req.Quality < pdf.MinQuality || req.Quality > pdf.LosslessQuality {
 		return badRequest("Quality must be between %d and %d", pdf.MinQuality, pdf.LosslessQuality)

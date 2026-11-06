@@ -60,11 +60,14 @@ func (s *Server) authedUser(r *http.Request) string {
 	return username
 }
 
-func (s *Server) requireAuth(r *http.Request) error {
-	if s.authedUser(r) == "" {
-		return errUnauthorized
+// authed rejects requests without a valid session before they reach next.
+func (s *Server) authed(next handlerFunc) handlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		if s.authedUser(r) == "" {
+			return errUnauthorized
+		}
+		return next(w, r)
 	}
-	return nil
 }
 
 func (s *Server) cookieSecure(r *http.Request) bool {

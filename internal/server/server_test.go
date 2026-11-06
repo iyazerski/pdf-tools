@@ -65,6 +65,23 @@ func TestRateLimitAppliesOnlyToLogin(t *testing.T) {
 	}
 }
 
+func TestAPIRequiresSession(t *testing.T) {
+	h := newTestServer(t).Handler()
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/npages"},
+		{http.MethodPost, "/api/merge"},
+		{http.MethodGet, "/api/page/x/1"},
+		{http.MethodDelete, "/api/upload/x"},
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), route.method, route.path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status = %d; want %d", route.method, route.path, rec.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
 func TestIndexPagesRenderAllPlaceholders(t *testing.T) {
 	a := newTestServer(t).assets
 	for _, page := range []staticAsset{a.indexAuthed, a.indexAnonymous, a.indexLoginError} {
