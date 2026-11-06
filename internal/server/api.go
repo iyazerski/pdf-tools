@@ -2,32 +2,22 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"uuid"
 
 	"github.com/iyazerski/pdf-tools/internal/pdf"
 	"github.com/iyazerski/pdf-tools/internal/uploads"
 )
 
-const (
-	thumbDPI = 40
-	fullDPI  = 144
-
-	defaultQuality = 80
-)
+const defaultQuality = 80
 
 var pdfMagic = []byte("%PDF-")
 
@@ -136,69 +126,6 @@ func multipartError(err error) error {
 	return badRequest("Error reading multipart/form-data request: %v", err)
 }
 
-// pageImage returns a JPEG of one page of an upload, rendering it on first use.
-func (s *Server) pageImage(w http.ResponseWriter, r *http.Request) error {
-	upload, ok := s.cfg.Uploads.Get(r.PathValue("upload"))
-	if !ok {
-		return badRequest("Unknown upload id")
-	}
-	defer s.cfg.Uploads.Release(upload)
-
-	page, err := strconv.Atoi(r.PathValue("page"))
-	if err != nil || page < 1 || page > upload.Pages {
-		return badRequest("Invalid page (must be between 1 and %d)", upload.Pages)
-	}
-
-	var imagePath string
-	switch kind := r.URL.Query().Get("kind"); kind {
-	case "", "thumb":
-		imagePath, err = s.thumbnail(r, upload, page)
-	case "full":
-		imagePath, err = s.fullPage(r, upload, page)
-	default:
-		return badRequest("Invalid kind %q (must be thumb or full)", kind)
-	}
-	if err != nil {
-		return err
-	}
-
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
-	return serveFile(w, r, imagePath)
-}
-
-func (s *Server) thumbnail(r *http.Request, upload *uploads.Upload, page int) (string, error) {
-	// One gs run for all pages is ~20x faster than one run per page, and avoids a burst of
-	// parallel processes when the client lazy-loads many thumbnails.
-	dir := filepath.Join(upload.Dir, "thumbs")
-	err := upload.EnsureThumbs(r.Context(), func(ctx context.Context) error {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		return s.cfg.PDF.RenderJPEG(ctx, upload.PDFPath, 0, thumbDPI, filepath.Join(dir, "%d.jpg"))
-	})
-	return filepath.Join(dir, fmt.Sprintf("%d.jpg", page)), err
-}
-
-func (s *Server) fullPage(r *http.Request, upload *uploads.Upload, page int) (string, error) {
-	path := filepath.Join(upload.Dir, fmt.Sprintf("full_%d.jpg", page))
-	if _, err := os.Stat(path); err == nil {
-		return path, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-
-	tmp := filepath.Join(upload.Dir, fmt.Sprintf("full_%d.%s.tmp", page, uuid.New()))
-	if err := s.cfg.PDF.RenderJPEG(r.Context(), upload.PDFPath, page, fullDPI, tmp); err != nil {
-		return "", errors.Join(err, removeIfExists(tmp))
-	}
-	// Rename replaces atomically, so a concurrent render of the same page is harmless.
-	if err := os.Rename(tmp, path); err != nil {
-		return "", errors.Join(err, removeIfExists(tmp))
-	}
-	return path, nil
-}
-
 func (s *Server) deleteUpload(w http.ResponseWriter, r *http.Request) error {
 	s.cfg.Uploads.Remove(r.PathValue("upload"))
 	w.WriteHeader(http.StatusNoContent)
@@ -293,11 +220,4 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string) error {
 func writeJSON(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/json")
 	return json.MarshalWrite(w, v)
-}
-
-func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
 }

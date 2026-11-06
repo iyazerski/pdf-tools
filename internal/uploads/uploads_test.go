@@ -1,8 +1,11 @@
 package uploads
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -60,6 +63,45 @@ func TestPutEvictsLeastRecentlyUsed(t *testing.T) {
 		}
 		assertDirExists(t, secondDir, false)
 	})
+}
+
+func TestRenderRunsOncePerKeyAndRetriesFailures(t *testing.T) {
+	s := NewStore(time.Hour, 10)
+	id, _ := putOne(t, s)
+	u, _ := s.Get(id)
+	defer s.Release(u)
+
+	var mu sync.Mutex
+	calls := map[string]int{}
+	render := func(key string, err error) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			calls[key]++
+			mu.Unlock()
+			return err
+		}
+	}
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() {
+			if err := u.Render(t.Context(), "a", render("a", nil)); err != nil {
+				t.Errorf("Render(a) = %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	failure := errors.New("boom")
+	if err := u.Render(t.Context(), "b", render("b", failure)); !errors.Is(err, failure) {
+		t.Errorf("failing Render(b) = %v; want %v", err, failure)
+	}
+	if err := u.Render(t.Context(), "b", render("b", nil)); err != nil {
+		t.Errorf("retried Render(b) = %v", err)
+	}
+
+	if calls["a"] != 1 || calls["b"] != 2 {
+		t.Errorf("render calls = %v; want a: 1, b: 2", calls)
+	}
 }
 
 func TestRemovedUploadKeepsDirUntilReleased(t *testing.T) {

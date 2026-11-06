@@ -178,11 +178,11 @@ func compress(ctx context.Context, dir string, inputs []string, quality int) (st
 	return out, ghostscript(ctx, append(args, inputs...)...)
 }
 
-// RenderJPEG renders pages of the PDF at in to JPEG files at dpi.
+// RenderJPEG renders pages first to last (1-based) of the PDF at in to JPEG files at dpi.
 //
-// When page is 0, it renders every page, and out must contain %d, which Ghostscript
-// replaces with the 1-based page number. Otherwise it renders only that page to out.
-func (p *Processor) RenderJPEG(ctx context.Context, in string, page, dpi int, out string) error {
+// When it renders more than one page, out must contain %d, which Ghostscript replaces with
+// the page's 1-based position in the range.
+func (p *Processor) RenderJPEG(ctx context.Context, in string, first, last, dpi int, out string) error {
 	args := []string{
 		// JPEG is opaque with a white background, matching typical PDF viewers, and is far
 		// smaller than PNG for scanned or photo pages.
@@ -191,11 +191,11 @@ func (p *Processor) RenderJPEG(ctx context.Context, in string, page, dpi int, ou
 		"-dTextAlphaBits=4",
 		"-dGraphicsAlphaBits=4",
 		"-r" + strconv.Itoa(dpi),
+		"-dFirstPage=" + strconv.Itoa(first),
+		"-dLastPage=" + strconv.Itoa(last),
+		"-sOutputFile=" + out,
+		in,
 	}
-	if page > 0 {
-		args = append(args, "-dFirstPage="+strconv.Itoa(page), "-dLastPage="+strconv.Itoa(page))
-	}
-	args = append(args, "-sOutputFile="+out, in)
 	return p.do(ctx, "render", func(ctx context.Context) error {
 		return ghostscript(ctx, args...)
 	})

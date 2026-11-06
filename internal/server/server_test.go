@@ -2,13 +2,23 @@ package server
 
 import (
 	"bytes"
+	"encoding/json/v2"
+	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/iyazerski/pdf-tools/internal/pdf"
+	"github.com/iyazerski/pdf-tools/internal/pdftest"
 	"github.com/iyazerski/pdf-tools/internal/session"
 	"github.com/iyazerski/pdf-tools/internal/uploads"
 )
@@ -79,6 +89,98 @@ func TestAPIRequiresSession(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s status = %d; want %d", route.method, route.path, rec.Code, http.StatusUnauthorized)
 		}
+	}
+}
+
+// login logs in to h and returns the session cookie.
+func login(t *testing.T, h http.Handler) *http.Cookie {
+	t.Helper()
+	form := url.Values{"username": {"test"}, "password": {"test"}}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "192.0.2.1:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sessionCookieName {
+			return c
+		}
+	}
+	t.Fatalf("login set no session cookie (status %d)", rec.Code)
+	return nil
+}
+
+func TestUploadPreviewAndMerge(t *testing.T) {
+	// Upload and merge directories go to the temporary directory, so clean them up too.
+	t.Setenv("TMPDIR", t.TempDir())
+	h := newTestServer(t).Handler()
+	cookie := login(t, h)
+	do := func(req *http.Request) *httptest.ResponseRecorder {
+		t.Helper()
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %s status = %d: %s", req.Method, req.URL, rec.Code, rec.Body)
+		}
+		return rec
+	}
+
+	// More pages than one thumbnail batch, so the test covers a later batch too.
+	widths := make([]int, thumbBatchPages+5)
+	for i := range widths {
+		widths[i] = 101 + i
+	}
+	src := filepath.Join(t.TempDir(), "in.pdf")
+	pdftest.Write(t, src, widths...)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", `form-data; name="file"; filename="in.pdf"`)
+	header.Set("Content-Type", "application/pdf")
+	part, err := mw.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(data)
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/npages", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	var uploaded npagesResponse
+	if err := json.Unmarshal(do(req).Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Pages != len(widths) {
+		t.Fatalf("pages = %d; want %d", uploaded.Pages, len(widths))
+	}
+
+	t.Run("previews", func(t *testing.T) {
+		if _, err := exec.LookPath("gs"); err != nil {
+			t.Skip("previews need Ghostscript (gs)")
+		}
+		for _, query := range []string{"1?kind=thumb", fmt.Sprintf("%d?kind=thumb", len(widths)), "2?kind=full"} {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/page/"+uploaded.UploadID+"/"+query, nil)
+			if rec := do(req); !bytes.HasPrefix(rec.Body.Bytes(), []byte("\xff\xd8")) {
+				t.Errorf("page %s is not a JPEG", query)
+			}
+		}
+	})
+
+	layout := fmt.Sprintf(`{"quality": 100, "layout": [{"upload": %q, "page": 3}, {"upload": %[1]q, "page": 1}]}`, uploaded.UploadID)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/merge", strings.NewReader(layout))
+	req.Header.Set("Content-Type", "application/json")
+	merged := filepath.Join(t.TempDir(), "merged.pdf")
+	if err := os.WriteFile(merged, do(req).Body.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pdftest.PageWidths(t, merged); !slices.Equal(got, []int{103, 101}) {
+		t.Errorf("merged page widths = %v; want [103 101]", got)
 	}
 }
 

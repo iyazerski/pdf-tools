@@ -25,30 +25,45 @@ type Upload struct {
 	refs    int
 	removed bool
 
-	// thumbsLock is a context-aware mutex that guards thumbsDone.
-	thumbsLock chan struct{}
-	thumbsDone bool
+	rendersMu sync.Mutex
+	renders   map[string]*rendered
 }
 
-// EnsureThumbs calls render unless an earlier call succeeded.
+// rendered tracks one file derived from an upload. lock is a context-aware mutex that
+// guards done.
+type rendered struct {
+	lock chan struct{}
+	done bool
+}
+
+// Render calls render unless an earlier call with the same key succeeded.
 //
-// Concurrent callers wait for the running render instead of starting their own. A failed
-// render is retried by the next caller.
-func (u *Upload) EnsureThumbs(ctx context.Context, render func(context.Context) error) error {
+// Concurrent callers with the same key wait for the running render instead of starting
+// their own, and a failed render is retried by the next caller. Keys name derived files,
+// such as a page image, so each one is rendered once for the upload's lifetime.
+func (u *Upload) Render(ctx context.Context, key string, render func(context.Context) error) error {
+	u.rendersMu.Lock()
+	r, ok := u.renders[key]
+	if !ok {
+		r = &rendered{lock: make(chan struct{}, 1)}
+		u.renders[key] = r
+	}
+	u.rendersMu.Unlock()
+
 	select {
-	case u.thumbsLock <- struct{}{}:
+	case r.lock <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-u.thumbsLock }()
+	defer func() { <-r.lock }()
 
-	if u.thumbsDone {
+	if r.done {
 		return nil
 	}
 	if err := render(ctx); err != nil {
 		return err
 	}
-	u.thumbsDone = true
+	r.done = true
 	return nil
 }
 
@@ -78,7 +93,7 @@ func NewStore(ttl time.Duration, maxEntries int) *Store {
 // keeping old uploads, which the client can add again.
 func (s *Store) Put(dir, pdfPath string, pages int) string {
 	id := uuid.New().String()
-	u := &Upload{Dir: dir, PDFPath: pdfPath, Pages: pages, thumbsLock: make(chan struct{}, 1)}
+	u := &Upload{Dir: dir, PDFPath: pdfPath, Pages: pages, renders: make(map[string]*rendered)}
 
 	s.mu.Lock()
 	var evicted []string
