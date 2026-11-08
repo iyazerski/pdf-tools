@@ -129,12 +129,18 @@ type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 // handle registers h for pattern, with request logging and a request body of at most
 // maxBody bytes.
 func (s *Server) handle(mux *http.ServeMux, pattern string, maxBody int64, h handlerFunc) {
-	mux.Handle(pattern, logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle(pattern, logRequests(func(w *statusRecorder, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := h(w, r); err != nil {
+		err := h(w, r)
+		switch {
+		case err == nil:
+		case w.wroteHeader:
+			// The client already has a status and part of the body, so an error can't reach it.
+			slog.Warn("request failed after its response started", "method", r.Method, "path", r.URL.Path, "error", err)
+		default:
 			writeError(w, r, err)
 		}
-	})))
+	}))
 }
 
 // httpError is an error with a status and a message that are safe to show to clients.
@@ -181,11 +187,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // logRequests logs each request's method, path, status, and duration.
-func logRequests(next http.Handler) http.Handler {
+func logRequests(next func(*statusRecorder, *http.Request)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		next(rec, r)
 		level := slog.LevelInfo
 		if rec.status >= http.StatusInternalServerError {
 			level = slog.LevelError
@@ -211,6 +217,12 @@ func (r *statusRecorder) WriteHeader(status int) {
 		r.wroteHeader = true
 	}
 	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write records the implicit 200 status that a body without WriteHeader gets.
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	r.wroteHeader = true
+	return r.ResponseWriter.Write(b)
 }
 
 // ReadFrom keeps the underlying writer's sendfile path for file responses.
