@@ -238,6 +238,7 @@ body[data-authed="0"] .auth-when-authed{display:none !important}
 .file .meta{display:flex; flex-direction:column; gap:2px; min-width: 0}
 .file .name{font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 520px}
 .file .sub{color:var(--muted); font-size: 12px}
+.file.failed .sub{color:var(--danger)}
 .file .tools{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}
 
 .thumb-btn{

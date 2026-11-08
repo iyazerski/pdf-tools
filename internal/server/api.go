@@ -181,7 +181,9 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 				return badRequest("Too many PDFs (max %d)", maxPDFs)
 			}
 			if upload, ok = s.cfg.Uploads.Get(ref.Upload); !ok {
-				return badRequest("Unknown or expired upload, please re-add the file")
+				// The client still has the file, so it can upload it again and retry.
+				w.Header().Set(missingUploadHeader, ref.Upload)
+				return errUnknownUpload
 			}
 			held[ref.Upload] = upload
 			inputs[ref.Upload] = pdf.Input{Path: upload.PDFPath, Pages: upload.Pages}

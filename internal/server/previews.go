@@ -25,7 +25,7 @@ const (
 func (s *Server) pageImage(w http.ResponseWriter, r *http.Request) error {
 	upload, ok := s.cfg.Uploads.Get(r.PathValue("upload"))
 	if !ok {
-		return badRequest("Unknown upload id")
+		return errUnknownUpload
 	}
 	defer s.cfg.Uploads.Release(upload)
 

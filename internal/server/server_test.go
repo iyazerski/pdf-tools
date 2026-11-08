@@ -182,6 +182,26 @@ func TestUploadPreviewAndMerge(t *testing.T) {
 	if got := pdftest.PageWidths(t, merged); !slices.Equal(got, []int{103, 101}) {
 		t.Errorf("merged page widths = %v; want [103 101]", got)
 	}
+
+	// Clients upload the file again when the server reports the upload as missing.
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/upload/"+uploaded.UploadID, nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	for _, req := range []*http.Request{
+		httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/page/"+uploaded.UploadID+"/1", nil),
+		httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/merge", strings.NewReader(layout)),
+	} {
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s after delete status = %d; want %d", req.Method, req.URL, rec.Code, http.StatusNotFound)
+		}
+		if req.Method == http.MethodPost && rec.Header().Get(missingUploadHeader) != uploaded.UploadID {
+			t.Errorf("merge after delete %s = %q; want %q", missingUploadHeader, rec.Header().Get(missingUploadHeader), uploaded.UploadID)
+		}
+	}
 }
 
 func TestIndexShowsLoginState(t *testing.T) {

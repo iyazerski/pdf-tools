@@ -31,6 +31,8 @@ const (
 	maxSmallBodyBytes  = 4 << 10
 
 	sessionCookieName = "pdf_tools_session"
+	// missingUploadHeader names the upload that a merge couldn't find.
+	missingUploadHeader = "Missing-Upload"
 
 	loginRateLimitPeriod = 2 * time.Second
 	loginRateLimitBurst  = 5
@@ -143,7 +145,11 @@ type httpError struct {
 
 func (e *httpError) Error() string { return e.msg }
 
-var errUnauthorized = &httpError{status: http.StatusUnauthorized, msg: "Unauthorized"}
+var (
+	errUnauthorized = &httpError{status: http.StatusUnauthorized, msg: "Unauthorized"}
+	// Uploads expire or get evicted, so clients must tell this apart from other errors.
+	errUnknownUpload = &httpError{status: http.StatusNotFound, msg: "Unknown or expired upload"}
+)
 
 func badRequest(format string, args ...any) error {
 	return &httpError{status: http.StatusBadRequest, msg: fmt.Sprintf(format, args...)}

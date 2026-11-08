@@ -119,10 +119,11 @@
     }
 
     const d = docs.get(docId);
-    if (!d || !d.uploadId) {
+    if (!d || d.status !== "ready") {
       showToast("Preview is not available yet.");
       return;
     }
+    const uploadId = d.uploadId;
 
     if (!previewModal || !previewTitle || !previewMeta || !previewImg || !previewLoading) return;
     closeAuthModal();
@@ -139,12 +140,16 @@
     const abort = new AbortController();
     previewAbort = abort;
     try {
-      const url = `/api/page/${encodeURIComponent(d.uploadId)}/${page}?kind=full`;
+      const url = `/api/page/${encodeURIComponent(uploadId)}/${page}?kind=full`;
       const res = await fetch(url, { credentials: "same-origin", signal: abort.signal });
       if (abort.signal.aborted) return;
       if (res.status === 401) {
         closePreviewModal();
         openAuthModal();
+        return;
+      }
+      if (res.status === 404 && await reuploadExpired(d, uploadId)) {
+        if (!abort.signal.aborted) openPreview(docId, page);
         return;
       }
       if (!res.ok) {
@@ -200,7 +205,15 @@
   showLoginErrorFromUrl();
 
   /**
-   * @typedef {{ id: string, file: File, name: string, size: number, pages: number | null, uploadId: string | null }} Doc
+   * A doc is "uploading", then "ready" or "failed". A ready doc goes back to "uploading"
+   * when the server drops its upload, and a failed one when the user retries. pages is
+   * known from the first successful upload on, and uploadId only while ready.
+   *
+   * @typedef {{
+   *   id: string, file: File, name: string, size: number,
+   *   status: "uploading" | "ready" | "failed", pages: number | null, uploadId: string | null,
+   *   error: string, uploadedAt: number, upload: Promise<void> | null, probedUploadId: string | null,
+   * }} Doc
    * @typedef {{ id: string, type: "doc" | "header" | "page", docId: string, page?: number }} Node
    */
 
@@ -273,16 +286,9 @@
     qualityValue.textContent = q >= LOSSLESS_QUALITY ? "Original" : `${q}%`;
   }
 
-  function docsUsedByNodes() {
-    const used = new Set();
-    for (const n of nodes) used.add(n.docId);
-    return used;
-  }
-
-  function allPageCountsKnown() {
-    for (const docId of docsUsedByNodes()) {
-      const d = docs.get(docId);
-      if (!d || d.pages == null) return false;
+  function allDocsReady() {
+    for (const d of docs.values()) {
+      if (d.status !== "ready") return false;
     }
     return true;
   }
@@ -290,7 +296,7 @@
   function setUiState() {
     const hasAny = docs.size > 0;
     empty.style.display = hasAny ? "none" : "block";
-    mergeBtn.disabled = merging || !hasAny || !allPageCountsKnown();
+    mergeBtn.disabled = merging || !hasAny || !allDocsReady();
     mergeBtn.textContent = merging ? "Downloading…" : "Download";
     clearBtn.disabled = merging || !hasAny;
     // The merge request holds the uploads it names, so they must not be removed meanwhile.
@@ -309,6 +315,115 @@
       });
     } catch {
       // Best-effort cleanup only.
+    }
+  }
+
+  /**
+   * Uploads d's file and marks it ready or failed. Concurrent calls share one upload.
+   * @param {Doc} d
+   */
+  function uploadDoc(d) {
+    if (!d.upload) {
+      d.status = "uploading";
+      d.uploadId = null;
+      d.error = "";
+      d.upload = sendUpload(d).finally(() => {
+        d.upload = null;
+      });
+      renderList();
+    }
+    return d.upload;
+  }
+
+  /** @param {Doc} d */
+  async function sendUpload(d) {
+    const fd = new FormData();
+    fd.append("file", d.file, d.name);
+    let uploadId = "";
+    let pages = 0;
+    let error = "";
+    let needsAuth = false;
+    try {
+      const res = await fetch("/api/npages", {
+        method: "POST",
+        body: fd,
+        credentials: "same-origin",
+      });
+      if (res.status === 401) {
+        needsAuth = true;
+        error = "Sign in to upload files.";
+      } else if (!res.ok) {
+        error = (await res.text().catch(() => "")).trim() || `Upload failed (${res.status})`;
+      } else {
+        const data = await res.json();
+        pages = Number(data.pages);
+        uploadId = typeof data.upload_id === "string" ? data.upload_id : "";
+        if (!Number.isInteger(pages) || pages <= 0 || !uploadId) error = "Invalid upload response";
+      }
+    } catch (err) {
+      error = err && err.message ? err.message : "Upload failed.";
+    }
+
+    if (docs.get(d.id) !== d) {
+      // The doc was removed while uploading; free the server copy right away.
+      if (uploadId) void deleteUpload(uploadId);
+      return;
+    }
+    if (error) {
+      d.status = "failed";
+      d.error = error;
+      if (needsAuth) openAuthModal();
+    } else {
+      d.status = "ready";
+      d.pages = pages;
+      d.uploadId = uploadId;
+      d.uploadedAt = Date.now();
+    }
+    renderList();
+  }
+
+  // Uploads expire after idling on the server, so an older one can go missing for good
+  // reason. A younger one means uploads are being evicted under load, where uploading
+  // again would only evict other uploads.
+  const MIN_UPLOAD_AGE_TO_RETRY_MS = 30_000;
+
+  /**
+   * Uploads d again after the server reported uploadId as missing, and reports whether d
+   * is ready afterwards.
+   * @param {Doc} d
+   * @param {string} uploadId
+   */
+  async function reuploadExpired(d, uploadId) {
+    if (d.status === "ready" && d.uploadId === uploadId) {
+      if (Date.now() - d.uploadedAt < MIN_UPLOAD_AGE_TO_RETRY_MS) {
+        d.status = "failed";
+        d.uploadId = null;
+        d.error = "The server dropped this file, please try again shortly.";
+        renderList();
+        return false;
+      }
+      uploadDoc(d);
+    }
+    if (d.upload) await d.upload;
+    return docs.get(d.id) === d && d.status === "ready";
+  }
+
+  /**
+   * Checks why a thumbnail of uploadId failed to load, and uploads d again if the upload is
+   * gone. Images don't expose their status, so this fetches the thumbnail once more.
+   * @param {Doc} d
+   * @param {string} uploadId
+   * @param {string} url
+   */
+  async function checkThumbError(d, uploadId, url) {
+    // Many thumbnails of one upload fail together, so check only the first.
+    if (d.status !== "ready" || d.uploadId !== uploadId || d.probedUploadId === uploadId) return;
+    d.probedUploadId = uploadId;
+    try {
+      const res = await fetch(url, { credentials: "same-origin" });
+      if (res.status === 404) await reuploadExpired(d, uploadId);
+    } catch {
+      // The thumbnail stays broken, and a preview or merge reports the problem.
     }
   }
 
@@ -386,15 +501,15 @@
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6.7 8.7a1 1 0 0 1 1.4 0L12 12.6l3.9-3.9a1 1 0 1 1 1.4 1.4l-4.6 4.6a1 1 0 0 1-1.4 0L6.7 10.1a1 1 0 0 1 0-1.4Z"/></svg>',
       chevronUp:
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6.7 15.3a1 1 0 0 0 1.4 0l3.9-3.9 3.9 3.9a1 1 0 1 0 1.4-1.4l-4.6-4.6a1 1 0 0 0-1.4 0l-4.6 4.6a1 1 0 0 0 0 1.4Z"/></svg>',
+      retry:
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z"/></svg>',
     };
 
     function iconBtn({ kind, label, onClick, disabled = false }) {
       const b = document.createElement("button");
       b.className = `btn icon-btn${kind === "danger" ? " danger" : ""}`;
       b.type = "button";
-      b.innerHTML = kind === "chevronDown" ? icons.chevronDown
-        : kind === "chevronUp" ? icons.chevronUp
-          : icons.trash;
+      b.innerHTML = kind === "danger" ? icons.trash : icons[kind];
       b.setAttribute("aria-label", label);
       b.title = label;
       b.disabled = disabled;
@@ -411,7 +526,7 @@
       if (!d) continue;
 
       const li = document.createElement("li");
-      li.className = `file${n.type === "page" ? " page" : ""}${n.type === "header" ? " header" : ""}`;
+      li.className = `file${n.type === "page" ? " page" : ""}${n.type === "header" ? " header" : ""}${d.status === "failed" ? " failed" : ""}`;
       li.dataset.id = n.id;
       li.draggable = n.type !== "header";
 
@@ -419,7 +534,7 @@
         const thumb = document.createElement("button");
         thumb.type = "button";
         thumb.className = "thumb-btn";
-        const canPreview = Boolean(d.uploadId) && d.pages != null;
+        const canPreview = d.status === "ready";
         thumb.disabled = !canPreview;
         thumb.setAttribute("aria-label", `Preview page ${n.page}`);
         thumb.title = canPreview ? "Preview page" : "Preview not available yet";
@@ -439,7 +554,9 @@
           img.loading = "lazy";
           img.decoding = "async";
           img.alt = "";
-          img.src = `/api/page/${encodeURIComponent(d.uploadId)}/${n.page}?kind=thumb`;
+          const uploadId = d.uploadId;
+          img.src = `/api/page/${encodeURIComponent(uploadId)}/${n.page}?kind=thumb`;
+          img.addEventListener("error", () => checkThumbError(d, uploadId, img.src));
           thumb.appendChild(img);
         } else {
           const ph = document.createElement("div");
@@ -460,11 +577,14 @@
 
       if (n.type === "doc") {
         name.textContent = d.name;
-        const pagesLabel = d.pages == null ? "pages: …" : `${d.pages} page${d.pages === 1 ? "" : "s"}`;
-        sub.textContent = `${formatBytes(d.size)} · PDF · ${pagesLabel}`;
+        const parts = [formatBytes(d.size), "PDF"];
+        if (d.pages != null) parts.push(`${d.pages} page${d.pages === 1 ? "" : "s"}`);
+        if (d.status === "uploading") parts.push("uploading…");
+        if (d.status === "failed") parts.push(d.error);
+        sub.textContent = parts.join(" · ");
       } else if (n.type === "header") {
         name.textContent = d.name;
-        sub.textContent = "Page editing (drag pages/documents to reorder)";
+        sub.textContent = d.status === "failed" ? d.error : "Page editing (drag pages/documents to reorder)";
       } else {
         name.textContent = `Page ${n.page}`;
         sub.textContent = d.name;
@@ -476,6 +596,15 @@
       const tools = document.createElement("div");
       tools.className = "tools";
 
+      if (n.type !== "page" && d.status === "failed") {
+        tools.appendChild(
+          iconBtn({
+            kind: "retry",
+            label: "Upload again",
+            onClick: () => uploadDoc(d),
+          }),
+        );
+      }
       if (n.type === "doc") {
         const canExpand = d.pages != null && d.pages > 1;
         tools.appendChild(
@@ -526,44 +655,6 @@
     setUiState();
   }
 
-  async function fetchNpages(docId) {
-    const d = docs.get(docId);
-    if (!d) return;
-    const fd = new FormData();
-    fd.append("file", d.file, d.name);
-    try {
-      const res = await fetch("/api/npages", {
-        method: "POST",
-        body: fd,
-        credentials: "same-origin",
-      });
-      if (res.status === 401) {
-        openAuthModal();
-        throw new Error("Sign in to upload files.");
-      }
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Failed to read pages (${res.status})`);
-      }
-      const data = await res.json();
-      const pages = Number(data.pages);
-      const uploadId = typeof data.upload_id === "string" ? data.upload_id : "";
-      if (!Number.isFinite(pages) || pages <= 0) throw new Error("Invalid pages response");
-      if (!uploadId) throw new Error("Invalid upload id response");
-      const cur = docs.get(docId);
-      if (!cur) {
-        // The doc was removed while uploading; free the server copy right away.
-        void deleteUpload(uploadId);
-        return;
-      }
-      cur.pages = pages;
-      cur.uploadId = uploadId;
-      renderList();
-    } catch (err) {
-      showToast(err && err.message ? err.message : "Failed to read pages.");
-    }
-  }
-
   function addFiles(fileListObj) {
     const files = Array.from(fileListObj);
     const accepted = files.filter((f) => {
@@ -589,9 +680,15 @@
     const slice = sized.slice(0, space);
     for (const f of slice) {
       const docId = uid();
-      docs.set(docId, { id: docId, file: f, name: f.name, size: f.size, pages: null, uploadId: null });
+      /** @type {Doc} */
+      const d = {
+        id: docId, file: f, name: f.name, size: f.size,
+        status: "uploading", pages: null, uploadId: null,
+        error: "", uploadedAt: 0, upload: null, probedUploadId: null,
+      };
+      docs.set(docId, d);
       nodes.push({ id: `d_${docId}`, type: "doc", docId });
-      fetchNpages(docId);
+      void uploadDoc(d);
     }
     if (slice.length < sized.length) {
       showToast(`Only the first ${slice.length} files were added (max ${MAX_FILES}).`);
@@ -686,8 +783,6 @@
     const layout = [];
     for (const n of nodes) {
       const d = docs.get(n.docId);
-      if (!d || d.pages == null) continue;
-      if (!d.uploadId) throw new Error("Some files are not uploaded yet.");
       if (n.type === "doc") {
         for (let p = 1; p <= d.pages; p += 1) layout.push({ upload: d.uploadId, page: p });
       } else if (n.type === "page") {
@@ -703,44 +798,15 @@
       openAuthModal();
       return;
     }
-    if (!allPageCountsKnown()) {
-      showToast("Pages are still being calculated…");
-      return;
-    }
-    let layout;
-    try {
-      layout = buildLayout();
-    } catch (err) {
-      showToast(err.message);
-      return;
-    }
-    if (layout.length === 0) {
-      showToast("Nothing to merge.");
+    if (!allDocsReady()) {
+      showToast("Some files are not uploaded yet.");
       return;
     }
 
     merging = true;
     setUiState();
     try {
-      const payload = {
-        quality: Number(quality.value),
-        layout,
-      };
-
-      const res = await fetch("/api/merge", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-        credentials: "same-origin",
-      });
-      if (res.status === 401) {
-        openAuthModal();
-        throw new Error("Sign in to download.");
-      }
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Merge failed (${res.status})`);
-      }
+      const res = await requestMerge(Number(quality.value));
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -757,6 +823,33 @@
     } finally {
       merging = false;
       setUiState();
+    }
+  }
+
+  // Sends the merge request, uploading files again when the server has dropped them.
+  // reuploadExpired fails for uploads that go missing again soon, so the loop ends.
+  async function requestMerge(q) {
+    for (;;) {
+      const res = await fetch("/api/merge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ quality: q, layout: buildLayout() }),
+        credentials: "same-origin",
+      });
+      if (res.status === 401) {
+        openAuthModal();
+        throw new Error("Sign in to download.");
+      }
+      if (res.status === 404) {
+        const missing = res.headers.get("Missing-Upload");
+        const d = Array.from(docs.values()).find((x) => x.uploadId === missing);
+        if (d && await reuploadExpired(d, missing)) continue;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Merge failed (${res.status})`);
+      }
+      return res;
     }
   }
 
