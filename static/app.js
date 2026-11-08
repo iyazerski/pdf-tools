@@ -222,6 +222,8 @@
   /** @type {Node[]} */
   let nodes = [];
 
+  // The list item being dragged. While set, the list's DOM order is only a preview: a drop
+  // commits it to nodes, and dragend renders from nodes again.
   let draggingEl = null;
   let merging = false;
 
@@ -492,6 +494,8 @@
   }
 
   function renderList() {
+    // Replacing the dragged element would break the drag, and dragend renders anyway.
+    if (draggingEl) return;
     fileList.innerHTML = "";
 
     const icons = {
@@ -740,10 +744,10 @@
     e.dataTransfer.effectAllowed = "move";
   });
 
+  // Renders from nodes, which also drops the preview order of a canceled drag.
   fileList.addEventListener("dragend", () => {
-    if (draggingEl) draggingEl.classList.remove("dragging");
     draggingEl = null;
-    syncOrderFromDom();
+    renderList();
   });
 
   fileList.addEventListener("dragover", (e) => {
@@ -763,19 +767,13 @@
 
   fileList.addEventListener("drop", (e) => {
     e.preventDefault();
-    syncOrderFromDom();
+    if (draggingEl) commitOrderFromDom();
   });
 
-  function syncOrderFromDom() {
-    const ids = Array.from(fileList.children).map((li) => li.dataset.id);
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    const next = [];
-    for (const id of ids) {
-      const n = byId.get(id);
-      if (n) next.push(n);
-    }
-    nodes = next;
-    setUiState();
+  function commitOrderFromDom() {
+    const order = new Map(Array.from(fileList.children, (li, i) => [li.dataset.id, i]));
+    const position = (n) => order.get(n.id) ?? order.size;
+    nodes = nodes.slice().sort((a, b) => position(a) - position(b));
   }
 
   function buildLayout() {
