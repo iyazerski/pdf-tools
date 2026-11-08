@@ -62,7 +62,9 @@ docker run --rm -p 8091:8091 \
    and a quality. The server builds the PDF with [pdfcpu](https://github.com/pdfcpu/pdfcpu).
    Below quality 100, Ghostscript then re-encodes the images to make the file smaller.
 4. **Cleanup.** An upload is deleted when you remove it in the UI, when it's idle for longer
-   than `UPLOAD_CACHE_TTL_SECS`, or when the server stops.
+   than `UPLOAD_CACHE_TTL_SECS`, when newer uploads push it out of the full cache, or when
+   the server stops. The API answers `404` for a deleted upload, and the browser then
+   uploads the file again from its own copy.
 
 All `/api/` routes need a valid session cookie. The server runs only `MAX_PDF_JOBS` PDF jobs
 at once. When it's busy, other requests wait for a free slot or get a `503`.
