@@ -30,7 +30,6 @@
   const previewImg = document.getElementById("previewImg");
 
   const ACCESS_EMAIL = "ihar.yazerski@gmail.com";
-  const LOGIN_ERROR_STORAGE_KEY = "pdf_tools_login_error";
 
   const isAuthed = document.body && document.body.dataset
     ? document.body.dataset.authed === "1"
@@ -61,41 +60,24 @@
     document.body.classList.toggle("modal-open", Boolean(anyOpen));
   }
 
-  function takePendingLoginErrorFromUrl() {
+  // A failed login redirects to /?login_error=1. Show the error once, and drop the query so
+  // a refresh doesn't show it again.
+  function showLoginErrorFromUrl() {
     const hasLoginError = document.body && document.body.dataset
       ? document.body.dataset.loginError === "1"
       : false;
     if (!hasLoginError || isAuthed) return;
-
-    // Don't auto-open the modal on refresh; keep the error for the next auth attempt.
-    try {
-      window.sessionStorage.setItem(LOGIN_ERROR_STORAGE_KEY, "1");
-    } catch {
-      // Ignore storage failures.
-    }
-
-    showToast("Invalid username or password.");
     if (window.history && window.history.replaceState) window.history.replaceState({}, "", "/");
+    openAuthModal("Invalid username or password.");
   }
 
-  function openAuthModal() {
+  function openAuthModal(errorMessage = "") {
     if (!authModal) return;
     closePreviewModal();
     authModal.hidden = false;
     refreshModalOpenClass();
     if (requestAccessLink) requestAccessLink.href = buildAccessRequestMailto();
-
-    let hasStoredLoginError = false;
-    try {
-      hasStoredLoginError = window.sessionStorage.getItem(LOGIN_ERROR_STORAGE_KEY) === "1";
-    } catch {
-      hasStoredLoginError = false;
-    }
-    if (hasStoredLoginError) {
-      setAuthError("Invalid username or password.");
-    } else {
-      setAuthError("");
-    }
+    setAuthError(errorMessage);
     if (authUsername) authUsername.focus();
   }
 
@@ -108,9 +90,14 @@
   }
 
   let previewObjectUrl = "";
-  let previewReq = 0;
+  // Aborted when the preview closes or another one opens, so stale responses are ignored.
+  let previewAbort = null;
 
   function closePreviewModal() {
+    if (previewAbort) {
+      previewAbort.abort();
+      previewAbort = null;
+    }
     if (!previewModal) return;
     previewModal.hidden = true;
     refreshModalOpenClass();
@@ -148,10 +135,13 @@
     previewModal.hidden = false;
     refreshModalOpenClass();
 
-    const reqId = ++previewReq;
+    if (previewAbort) previewAbort.abort();
+    const abort = new AbortController();
+    previewAbort = abort;
     try {
       const url = `/api/page/${encodeURIComponent(d.uploadId)}/${page}?kind=full`;
-      const res = await fetch(url, { credentials: "same-origin" });
+      const res = await fetch(url, { credentials: "same-origin", signal: abort.signal });
+      if (abort.signal.aborted) return;
       if (res.status === 401) {
         closePreviewModal();
         openAuthModal();
@@ -162,20 +152,15 @@
         throw new Error(text || `Preview failed (${res.status})`);
       }
       const blob = await res.blob();
+      if (abort.signal.aborted) return;
       const objectUrl = URL.createObjectURL(blob);
-
-      if (reqId !== previewReq) {
-        URL.revokeObjectURL(objectUrl);
-        return;
-      }
-
       if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
       previewObjectUrl = objectUrl;
       previewImg.src = objectUrl;
       previewImg.hidden = false;
       previewLoading.hidden = true;
     } catch (err) {
-      if (reqId !== previewReq) return;
+      if (abort.signal.aborted) return;
       showToast(err && err.message ? err.message : "Preview failed.");
       closePreviewModal();
     }
@@ -187,7 +172,7 @@
     return false;
   }
 
-  if (openAuthBtn) openAuthBtn.addEventListener("click", openAuthModal);
+  if (openAuthBtn) openAuthBtn.addEventListener("click", () => openAuthModal());
   if (authCloseBtn) authCloseBtn.addEventListener("click", closeAuthModal);
   if (requestAccessLink) requestAccessLink.href = buildAccessRequestMailto();
   if (authModal) {
@@ -212,7 +197,7 @@
     fileInput.disabled = true;
   }
 
-  takePendingLoginErrorFromUrl();
+  showLoginErrorFromUrl();
 
   /**
    * @typedef {{ id: string, file: File, name: string, size: number, pages: number | null, uploadId: string | null }} Doc
@@ -225,6 +210,7 @@
   let nodes = [];
 
   let draggingEl = null;
+  let merging = false;
 
   function uid() {
     if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -304,8 +290,11 @@
   function setUiState() {
     const hasAny = docs.size > 0;
     empty.style.display = hasAny ? "none" : "block";
-    mergeBtn.disabled = !hasAny || !allPageCountsKnown();
-    clearBtn.disabled = !hasAny;
+    mergeBtn.disabled = merging || !hasAny || !allPageCountsKnown();
+    mergeBtn.textContent = merging ? "Downloading…" : "Download";
+    clearBtn.disabled = merging || !hasAny;
+    // The merge request holds the uploads it names, so they must not be removed meanwhile.
+    fileList.inert = merging;
     count.textContent = String(docs.size);
     inputSize.textContent = formatBytes(totalInputBytes());
     estimatedSize.textContent = formatBytes(estimateOutputBytes());
@@ -331,13 +320,12 @@
     renderList();
   }
 
-  function maybeCleanupDoc(docId) {
-    const stillUsed = nodes.some((n) => n.docId === docId);
-    if (!stillUsed) {
-      const d = docs.get(docId);
-      if (d && d.uploadId) void deleteUpload(d.uploadId);
-      docs.delete(docId);
-    }
+  function removePage(nodeId, docId) {
+    nodes = nodes.filter((n) => n.id !== nodeId);
+    // A header alone adds no pages to the output, so the doc is gone with its last page.
+    const hasPages = nodes.some((n) => n.docId === docId && n.type !== "header");
+    if (hasPages) renderList();
+    else removeDocEverywhere(docId);
   }
 
   function canCollapse(docId) {
@@ -526,11 +514,7 @@
           iconBtn({
             kind: "danger",
             label: "Remove page",
-            onClick: () => {
-              nodes = nodes.filter((x) => x.id !== n.id);
-              maybeCleanupDoc(n.docId);
-              renderList();
-            },
+            onClick: () => removePage(n.id, n.docId),
           }),
         );
       }
@@ -714,7 +698,7 @@
   }
 
   async function doMerge() {
-    if (docs.size === 0) return;
+    if (merging || docs.size === 0) return;
     if (!isAuthed) {
       openAuthModal();
       return;
@@ -735,10 +719,8 @@
       return;
     }
 
-    mergeBtn.disabled = true;
-    clearBtn.disabled = true;
-    const prev = mergeBtn.textContent;
-    mergeBtn.textContent = "Downloading…";
+    merging = true;
+    setUiState();
     try {
       const payload = {
         quality: Number(quality.value),
@@ -773,7 +755,7 @@
     } catch (err) {
       showToast(err && err.message ? err.message : "Merge failed.");
     } finally {
-      mergeBtn.textContent = prev;
+      merging = false;
       setUiState();
     }
   }
