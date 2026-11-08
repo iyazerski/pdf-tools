@@ -72,7 +72,10 @@ func (s *Server) npages(w http.ResponseWriter, r *http.Request) (err error) {
 	if err != nil {
 		return err
 	}
-	uploadID := s.cfg.Uploads.Put(dir, path, pages)
+	uploadID, err := s.cfg.Uploads.Put(dir, path, pages)
+	if err != nil {
+		return err
+	}
 	stored = true
 	slog.Info("computed page count", "pages", pages, "file", fileName)
 	return writeJSON(w, npagesResponse{Pages: pages, UploadID: uploadID})

@@ -17,7 +17,11 @@ func putOne(t *testing.T, s *Store) (id, dir string) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return s.Put(dir, filepath.Join(dir, "in.pdf"), 1), dir
+	id, err := s.Put(dir, filepath.Join(dir, "in.pdf"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, dir
 }
 
 func assertDirExists(t *testing.T, dir string, want bool) {
@@ -51,6 +55,11 @@ func TestRunDeletesExpiredUploadsThenAllOnStop(t *testing.T) {
 		stop()
 		<-done
 		assertDirExists(t, freshDir, false)
+
+		// Requests that outlive shutdown can't add uploads that nothing would delete.
+		if _, err := s.Put(t.TempDir(), "in.pdf", 1); !errors.Is(err, ErrClosed) {
+			t.Errorf("Put after stop = %v; want %v", err, ErrClosed)
+		}
 	})
 }
 

@@ -3,6 +3,7 @@ package uploads
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
@@ -11,6 +12,9 @@ import (
 )
 
 const sweepInterval = time.Minute
+
+// ErrClosed reports a Put after Run has stopped and deleted all uploads.
+var ErrClosed = errors.New("upload store is closed")
 
 // Upload is an uploaded PDF in its own directory.
 //
@@ -79,6 +83,9 @@ type Store struct {
 
 	mu      sync.Mutex
 	entries map[string]*entry
+	// closed is set once Run stops. Requests can outlive it when shutdown gives up
+	// waiting for them, and their uploads must not outlive the store.
+	closed bool
 }
 
 // NewStore returns a Store that expires uploads idle for ttl and keeps at most maxEntries.
@@ -86,16 +93,21 @@ func NewStore(ttl time.Duration, maxEntries int) *Store {
 	return &Store{ttl: ttl, maxEntries: maxEntries, entries: make(map[string]*entry)}
 }
 
-// Put stores the PDF at pdfPath and returns its new upload ID.
+// Put stores the PDF at pdfPath and returns its new upload ID, or ErrClosed once Run has
+// stopped.
 //
-// The store takes ownership of dir and deletes it when the upload is gone. When the store
+// On success, the store takes ownership of dir and deletes it when the upload is gone. When the store
 // is full, the least recently used uploads are evicted: bounded disk use matters more than
 // keeping old uploads, which the client can add again.
-func (s *Store) Put(dir, pdfPath string, pages int) string {
+func (s *Store) Put(dir, pdfPath string, pages int) (string, error) {
 	id := uuid.New().String()
 	u := &Upload{Dir: dir, PDFPath: pdfPath, Pages: pages, renders: make(map[string]*rendered)}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return "", ErrClosed
+	}
 	var evicted []string
 	for len(s.entries) >= s.maxEntries {
 		oldest := ""
@@ -110,7 +122,7 @@ func (s *Store) Put(dir, pdfPath string, pages int) string {
 	s.mu.Unlock()
 
 	removeDirs(evicted)
-	return id
+	return id, nil
 }
 
 // Get returns the upload with id and marks it as used. The caller must pass it to Release
@@ -156,14 +168,14 @@ func (s *Store) Remove(id string) {
 }
 
 // Run deletes expired uploads periodically until ctx is done, so files don't outlive the
-// TTL while the app is idle. Then it deletes all remaining uploads.
+// TTL while the app is idle. Then it deletes all remaining uploads and rejects new ones.
 func (s *Store) Run(ctx context.Context) {
 	ticker := time.NewTicker(sweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			s.removeAll()
+			s.close()
 			return
 		case now := <-ticker.C:
 			s.sweep(now)
@@ -183,8 +195,9 @@ func (s *Store) sweep(now time.Time) {
 	removeDirs(dirs)
 }
 
-func (s *Store) removeAll() {
+func (s *Store) close() {
 	s.mu.Lock()
+	s.closed = true
 	var dirs []string
 	for id := range s.entries {
 		dirs = append(dirs, s.removeLocked(id)...)
