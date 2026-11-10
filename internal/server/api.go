@@ -34,7 +34,7 @@ func (s *Server) npages(w http.ResponseWriter, r *http.Request) (err error) {
 		return badRequest("Error parsing multipart/form-data request")
 	}
 
-	dir, err := os.MkdirTemp("", "upload-")
+	dir, err := os.MkdirTemp(s.cfg.WorkDir, "upload-")
 	if err != nil {
 		return err
 	}
@@ -197,7 +197,7 @@ func (s *Server) merge(w http.ResponseWriter, r *http.Request) error {
 		layout[i] = pdf.PageRef{Upload: ref.Upload, Page: ref.Page}
 	}
 
-	dir, err := os.MkdirTemp("", "merge-")
+	dir, err := os.MkdirTemp(s.cfg.WorkDir, "merge-")
 	if err != nil {
 		return err
 	}
