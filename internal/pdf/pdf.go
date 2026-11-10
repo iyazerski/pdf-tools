@@ -93,41 +93,30 @@ func (p *Processor) PageCount(ctx context.Context, path string) (int, error) {
 // input's path is returned as-is.
 //
 // All steps run as one job, so a merge holds one slot and one timeout from start to end.
-// Only one merge at a time runs its pdfcpu steps, while Ghostscript steps run in parallel.
+// Only one merge at a time runs a pdfcpu step, while Ghostscript steps run in parallel.
 func (p *Processor) Merge(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef, quality int) (string, error) {
 	var out string
 	err := p.do(ctx, "merge", func(ctx context.Context) error {
-		var parts []string
-		err := p.assemble(ctx, func() error {
-			var err error
-			if parts, err = collectParts(ctx, dir, inputs, layout); err != nil {
-				return err
-			}
-			// Ghostscript concatenates its inputs, so lossy merges need no merge pass of their own.
-			if quality < LosslessQuality || len(parts) == 1 {
-				return nil
-			}
-			merged := filepath.Join(dir, "merged.pdf")
-			if err := mergeFiles(ctx, parts, merged); err != nil {
-				return err
-			}
-			parts = []string{merged}
-			return nil
-		})
+		parts, err := p.collectParts(ctx, dir, inputs, layout)
 		if err != nil {
 			return err
 		}
-		if quality < LosslessQuality {
+		switch {
+		case quality < LosslessQuality:
+			// Ghostscript concatenates its inputs, so the parts need no merge pass of their own.
 			out, err = compress(ctx, dir, parts, quality)
-			return err
+		case len(parts) == 1:
+			out = parts[0]
+		default:
+			out = filepath.Join(dir, "merged.pdf")
+			err = p.assemble(ctx, func() error { return mergeFiles(ctx, parts, out) })
 		}
-		out = parts[0]
-		return nil
+		return err
 	})
 	return out, err
 }
 
-// assemble runs step once no other merge is running its pdfcpu steps.
+// assemble runs step, a pdfcpu call, once no other merge is running one.
 func (p *Processor) assemble(ctx context.Context, step func() error) error {
 	select {
 	case p.assembling <- struct{}{}:
@@ -140,10 +129,15 @@ func (p *Processor) assemble(ctx context.Context, step func() error) error {
 
 // collectParts returns PDFs in dir that hold the pages of layout when concatenated in order.
 // Whole documents are used as they are.
-func collectParts(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) ([]string, error) {
+func (p *Processor) collectParts(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef) ([]string, error) {
 	segs := segments(layout)
 	if uploadRepeats(segs) {
-		part, err := collectInterleaved(ctx, dir, inputs, layout)
+		var part string
+		err := p.assemble(ctx, func() error {
+			var err error
+			part, err = collectInterleaved(ctx, dir, inputs, layout)
+			return err
+		})
 		return []string{part}, err
 	}
 
@@ -159,7 +153,10 @@ func collectParts(ctx context.Context, dir string, inputs map[string]Input, layo
 			continue
 		}
 		part := filepath.Join(dir, fmt.Sprintf("part_%d.pdf", i))
-		if err := api.CollectFile(ctx, in.Path, part, pageSelection(seg.pages), newConfig()); err != nil {
+		err := p.assemble(ctx, func() error {
+			return api.CollectFile(ctx, in.Path, part, pageSelection(seg.pages), newConfig())
+		})
+		if err != nil {
 			return nil, fmt.Errorf("pages of %q: %w", seg.upload, err)
 		}
 		parts = append(parts, part)
