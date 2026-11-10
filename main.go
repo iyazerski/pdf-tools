@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -65,6 +66,11 @@ func run() error {
 		return err
 	}
 
+	workDir, err := resetWorkDir()
+	if err != nil {
+		return err
+	}
+
 	secret := []byte(cfg.sessionSecret)
 	store := uploads.NewStore(cfg.uploadCacheTTL, uploadCacheMaxEntries)
 	srv, err := server.New(server.Config{
@@ -75,6 +81,7 @@ func run() error {
 		Uploads:           store,
 		PDF:               pdf.NewProcessor(cfg.processTimeout, cfg.maxPDFJobs),
 		Assets:            assetsFS,
+		WorkDir:           workDir,
 	})
 	if err != nil {
 		return err
@@ -144,6 +151,20 @@ func shutdown(srv *http.Server, cancelRequests context.CancelFunc, drain, cancel
 		return errors.Join(fmt.Errorf("wait for canceled requests: %w", err), srv.Close())
 	}
 	return nil
+}
+
+// resetWorkDir returns an empty directory for uploads and merges, deleting what an earlier
+// process left behind. The pod's emptyDir survives container restarts, and the new process
+// doesn't know the old uploads, so nothing else would ever delete them.
+func resetWorkDir() (string, error) {
+	dir := filepath.Join(os.TempDir(), "pdf-tools")
+	if err := os.RemoveAll(dir); err != nil {
+		return "", fmt.Errorf("clear work directory: %w", err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create work directory: %w", err)
+	}
+	return dir, nil
 }
 
 // setupLogging logs plain text to stdout at LOG_LEVEL (default info). Logs go to kubectl,

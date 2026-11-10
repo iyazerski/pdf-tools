@@ -74,6 +74,8 @@ type Config struct {
 	TrustProxyHeaders bool
 	Uploads           *uploads.Store
 	PDF               *pdf.Processor
+	// WorkDir holds the upload and merge directories. It must exist.
+	WorkDir string
 	// Assets must contain templates/index.html and the files in static/.
 	Assets fs.FS
 }

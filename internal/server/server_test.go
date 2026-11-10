@@ -33,6 +33,7 @@ func newTestServer(t *testing.T) *Server {
 		TrustProxyHeaders: true,
 		Uploads:           uploads.NewStore(time.Minute, 10),
 		PDF:               pdf.NewProcessor(30*time.Second, 2),
+		WorkDir:           t.TempDir(),
 		// The repo root holds the real templates/ and static/ directories.
 		Assets: os.DirFS("../.."),
 	})
@@ -111,8 +112,6 @@ func login(t *testing.T, h http.Handler) *http.Cookie {
 }
 
 func TestUploadPreviewAndMerge(t *testing.T) {
-	// Upload and merge directories go to the temporary directory, so clean them up too.
-	t.Setenv("TMPDIR", t.TempDir())
 	h := newTestServer(t).Handler()
 	cookie := login(t, h)
 	do := func(req *http.Request) *httptest.ResponseRecorder {
