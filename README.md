@@ -68,7 +68,8 @@ docker run --rm -p 8091:8091 \
    the server empties on startup, so files from a crashed process don't stay behind.
 
 All `/api/` routes need a valid session cookie. The server runs only `MAX_PDF_JOBS` PDF jobs
-at once. When it's busy, other requests wait for a free slot or get a `503`.
+at once. When it's busy, other requests wait for a free slot or get a `503`. pdfcpu keeps
+all pages of a merge in memory, so only one merge at a time runs its pdfcpu steps.
 
 ## Project layout
 

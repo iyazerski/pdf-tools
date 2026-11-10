@@ -38,12 +38,20 @@ var (
 type Processor struct {
 	slots   chan struct{}
 	timeout time.Duration
+	// assembling is a context-aware mutex held while pdfcpu copies or joins pages. Those
+	// steps keep every input stream in memory, so two max-size merges at once would need
+	// about twice the pod's memory.
+	assembling chan struct{}
 }
 
 // NewProcessor returns a Processor that runs at most maxJobs jobs at once, and stops each
 // job after timeout. A job that waits longer than timeout for a slot fails with ErrBusy.
 func NewProcessor(timeout time.Duration, maxJobs int) *Processor {
-	return &Processor{slots: make(chan struct{}, maxJobs), timeout: timeout}
+	return &Processor{
+		slots:      make(chan struct{}, maxJobs),
+		timeout:    timeout,
+		assembling: make(chan struct{}, 1),
+	}
 }
 
 // PageRef selects one page (1-based) of an upload.
@@ -85,26 +93,49 @@ func (p *Processor) PageCount(ctx context.Context, path string) (int, error) {
 // input's path is returned as-is.
 //
 // All steps run as one job, so a merge holds one slot and one timeout from start to end.
+// Only one merge at a time runs its pdfcpu steps, while Ghostscript steps run in parallel.
 func (p *Processor) Merge(ctx context.Context, dir string, inputs map[string]Input, layout []PageRef, quality int) (string, error) {
 	var out string
 	err := p.do(ctx, "merge", func(ctx context.Context) error {
-		parts, err := collectParts(ctx, dir, inputs, layout)
+		var parts []string
+		err := p.assemble(ctx, func() error {
+			var err error
+			if parts, err = collectParts(ctx, dir, inputs, layout); err != nil {
+				return err
+			}
+			// Ghostscript concatenates its inputs, so lossy merges need no merge pass of their own.
+			if quality < LosslessQuality || len(parts) == 1 {
+				return nil
+			}
+			merged := filepath.Join(dir, "merged.pdf")
+			if err := mergeFiles(ctx, parts, merged); err != nil {
+				return err
+			}
+			parts = []string{merged}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		switch {
-		case quality < LosslessQuality:
-			// Ghostscript concatenates its inputs, so the parts need no merge pass of their own.
+		if quality < LosslessQuality {
 			out, err = compress(ctx, dir, parts, quality)
-		case len(parts) == 1:
-			out = parts[0]
-		default:
-			out = filepath.Join(dir, "merged.pdf")
-			err = mergeFiles(ctx, parts, out)
+			return err
 		}
-		return err
+		out = parts[0]
+		return nil
 	})
 	return out, err
+}
+
+// assemble runs step once no other merge is running its pdfcpu steps.
+func (p *Processor) assemble(ctx context.Context, step func() error) error {
+	select {
+	case p.assembling <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("wait for another merge: %w", ctx.Err())
+	}
+	defer func() { <-p.assembling }()
+	return step()
 }
 
 // collectParts returns PDFs in dir that hold the pages of layout when concatenated in order.
@@ -170,6 +201,10 @@ func collectInterleaved(ctx context.Context, dir string, inputs map[string]Input
 	out := filepath.Join(dir, "collected.pdf")
 	if err := api.CollectFile(ctx, joined, out, pageSelection(pages), newConfig()); err != nil {
 		return "", fmt.Errorf("collect pages: %w", err)
+	}
+	// The joined file can be as large as all uploads together, and later steps don't need it.
+	if err := os.Remove(joined); err != nil {
+		return "", err
 	}
 	return out, nil
 }
