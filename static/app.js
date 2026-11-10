@@ -660,6 +660,12 @@
   }
 
   function addFiles(fileListObj) {
+    // A merge that retries after re-uploading builds its layout again from the list, so
+    // files added meanwhile would change what it downloads.
+    if (merging) {
+      showToast("Wait for the download to finish.");
+      return;
+    }
     const files = Array.from(fileListObj);
     const accepted = files.filter((f) => {
       const nameOk = f.name.toLowerCase().endsWith(".pdf");
